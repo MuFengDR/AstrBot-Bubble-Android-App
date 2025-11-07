@@ -1,6 +1,7 @@
 # AstrBot-Android-App: 🤖 移动端一键运行的 AstrBot 聊天机器人平台
 
 ## 项目简介 📝
+![455484170-ffd99b6b-3272-4682-beaa-6fe74250f7d9](https://github.com/user-attachments/assets/77a04df3-9721-4e92-b2c3-975c11006167)
 
 AstrBot-Android-App 是一款基于 **AstrBot 聊天机器人框架** 与 **Code LFA 的 Ubuntu 容器环境 & 浏览器框架** 打造的移动端解决方案，让你在 Android 设备上一键启动、配置并运行强大的多平台 LLM 聊天机器人。
 
@@ -64,7 +65,7 @@ AstrBot-Android-App/
 ### 构建步骤 🛠️
 1. 克隆本项目仓库：
    ```bash
-   git clone https://github.com/你的用户名/AstrBot-Android-App.git
+   git clone https://github.com/zz6zz666/AstrBot-Android-App.git
    cd AstrBot-Android-App
    ```
 
