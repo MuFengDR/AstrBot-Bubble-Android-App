@@ -129,6 +129,9 @@ install_napcat(){
   # 检查是否已安装
   if [ ! -f "$HOME/launcher.sh" ]; then
     progress_echo "Napcat $L_NOT_INSTALLED，$L_INSTALLING..."
+    
+    apt --fix-broken install -y
+
     rm -rf $HOME/napcat
     cd $HOME
     echo "Napcat $L_NOT_INSTALLED，$L_INSTALLING..."
