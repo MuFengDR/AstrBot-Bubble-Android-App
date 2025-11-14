@@ -11,6 +11,7 @@ import android.os.Build;
 import android.os.IBinder;
 
 import androidx.core.app.NotificationCompat;
+import com.astrbot.astrbot_android.R;
 
 public class KeepAliveForegroundService extends Service {
     private static final String CHANNEL_ID = "AstrBotKeepAliveChannel";
@@ -85,11 +86,16 @@ public class KeepAliveForegroundService extends Service {
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("AstrBot正在运行")
                 .setContentText("应用正在后台保持运行状态")
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setSmallIcon(R.drawable.ic_notification)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setOngoing(true);
+                .setOngoing(true)
+                .setAutoCancel(false)
+                .setOnlyAlertOnce(true);
 
-        return builder.build();
+        Notification notification = builder.build();
+        notification.flags |= Notification.FLAG_ONGOING_EVENT | Notification.FLAG_NO_CLEAR;
+
+        return notification;
     }
 
     /**
