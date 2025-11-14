@@ -22,8 +22,6 @@ class HomeController extends GetxController {
   final RxBool _isQrcodeShowing = false.obs;
   Dialog? _qrcodeDialog;
   StreamSubscription? _qrcodeSubscription;
-  bool _qrcodeCompleted = false; // 标记二维码是否已完成
-  bool _portDetected = false; // 标记端口是否已检测到
 
   late Terminal terminal = Terminal(
     maxLines: 10000,
@@ -84,7 +82,7 @@ EOF
         bumpProgress();
       }
 
-      if (event.contains('http://0.0.0.0:${Config.port}')) {
+      if (event.contains('适配器已连接')) {
         Log.e(event);
         if (!completer.isCompleted) {
           completer.complete();
@@ -95,13 +93,8 @@ EOF
     await completer.future;
     bumpProgress();
 
-    // 设置端口检测标志
-    _portDetected = true;
-    // 检查两个条件是否都满足
-    if (_qrcodeCompleted && !webviewHasOpen) {
-      webviewHasOpen = true;
-      openWebView();
-    }
+    webviewHasOpen = true;
+    openWebView();
 
     Future.delayed(const Duration(milliseconds: 2000), () {
       update();
@@ -174,15 +167,6 @@ EOF
         // 取消订阅，后续不再监听任何指令
         await _qrcodeSubscription?.cancel();
         _qrcodeSubscription = null; // 置空标记已取消
-
-        // 标记二维码已完成
-        _qrcodeCompleted = true;
-
-        // 检查端口是否已经检测到
-        if (_portDetected && !webviewHasOpen) {
-          webviewHasOpen = true;
-          openWebView();
-        }
       }
     });
   }
