@@ -9,7 +9,7 @@ import androidx.annotation.NonNull;
 import androidx.fragment.app.FragmentActivity;
 import androidx.fragment.app.FragmentManager;
 
-// import com.astrbot.astrbot_android.service.KeepAliveForegroundService;
+import com.astrbot.astrbot_android.service.KeepAliveForegroundService;
 
 import io.flutter.embedding.android.FlutterFragment;
 import io.flutter.embedding.engine.FlutterEngine;
@@ -28,10 +28,10 @@ public class MainActivity extends FragmentActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         mContext = this;
-        setContentView(R.layout.my_activity_layout);
+        setContentView(com.astrbot.astrbot_android.R.layout.my_activity_layout);
         
-        // // 启动前台服务以保持应用在后台运行
-        // KeepAliveForegroundService.startService(this);
+        // 启动前台服务以保持应用在后台运行
+        KeepAliveForegroundService.startService(this);
         
         flutterFragment = (FlutterFragment) fragmentManager.findFragmentByTag(TAG_FLUTTER_FRAGMENT);
         FlutterEngine flutterEngine = new FlutterEngine(this, null, false);
@@ -41,7 +41,7 @@ public class MainActivity extends FragmentActivity {
                 case "open_webview": {
                     runOnUiThread(() -> {
                         fragmentManager.beginTransaction()
-                                .replace(R.id.fl_container, new WebViewFragment())
+                                .replace(com.astrbot.astrbot_android.R.id.fl_container, new WebViewFragment())
                                 .commit();
                         result.success("success");
                     });
@@ -62,7 +62,7 @@ public class MainActivity extends FragmentActivity {
         }
         fragmentManager
                 .beginTransaction()
-                .add(R.id.fl_container, flutterFragment, TAG_FLUTTER_FRAGMENT)
+                .add(com.astrbot.astrbot_android.R.id.fl_container, flutterFragment, TAG_FLUTTER_FRAGMENT)
                 .commit();
     }
 
@@ -114,7 +114,7 @@ public class MainActivity extends FragmentActivity {
     protected void onDestroy() {
         super.onDestroy();
         // 停止前台服务
-        // KeepAliveForegroundService.stopService(this);
+        KeepAliveForegroundService.stopService(this);
     }
 
 }

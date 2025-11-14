@@ -1,0 +1,114 @@
+package com.astrbot.astrbot_android.service;
+
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.Service;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.os.Build;
+import android.os.IBinder;
+
+import androidx.core.app.NotificationCompat;
+
+public class KeepAliveForegroundService extends Service {
+    private static final String CHANNEL_ID = "AstrBotKeepAliveChannel";
+    private static final int NOTIFICATION_ID = 1001;
+    private static final String CHANNEL_NAME = "AstrBot后台服务";
+    private static final String CHANNEL_DESCRIPTION = "保持AstrBot在后台运行";
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        createNotificationChannel();
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        // 检查通知权限
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            NotificationManager notificationManager = getSystemService(NotificationManager.class);
+            if (notificationManager != null && 
+                checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                // 权限未授予，但前台服务仍需启动
+            }
+        }
+        
+        Notification notification = createNotification();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // Android 14 (API 34) 及以上版本需要指定前台服务类型
+            startForeground(NOTIFICATION_ID, notification, 
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+        } else {
+            startForeground(NOTIFICATION_ID, notification);
+        }
+        
+        // 返回START_STICKY表示服务被杀死后会自动重启
+        return START_STICKY;
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        return null;
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+    }
+
+    /**
+     * 创建通知渠道（Android 8.0及以上需要）
+     */
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    CHANNEL_ID,
+                    CHANNEL_NAME,
+                    NotificationManager.IMPORTANCE_DEFAULT
+            );
+            channel.setDescription(CHANNEL_DESCRIPTION);
+            channel.setShowBadge(false);
+            
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            if (manager != null) {
+                manager.createNotificationChannel(channel);
+            }
+        }
+    }
+
+    /**
+     * 创建通知
+     */
+    private Notification createNotification() {
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("AstrBot正在运行")
+                .setContentText("应用正在后台保持运行状态")
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setOngoing(true);
+
+        return builder.build();
+    }
+
+    /**
+     * 启动前台服务
+     */
+    public static void startService(Context context) {
+        Intent intent = new Intent(context, KeepAliveForegroundService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent);
+        } else {
+            context.startService(intent);
+        }
+    }
+
+    /**
+     * 停止前台服务
+     */
+    public static void stopService(Context context) {
+        Intent intent = new Intent(context, KeepAliveForegroundService.class);
+        context.stopService(intent);
+    }
+}
