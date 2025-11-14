@@ -23,6 +23,7 @@ install_sudo_curl_git(){
   if [ -z "$curl_path" ]; then
     progress_echo "curl $L_NOT_INSTALLED, $L_INSTALLING..."
     apt-get update
+    apt --fix-broken install -y
     apt-get install -y sudo
     sudo apt-get install -y git
     sudo apt-get install -y curl
