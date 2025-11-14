@@ -22,6 +22,7 @@ class HomeController extends GetxController {
   final RxBool _isQrcodeShowing = false.obs;
   Dialog? _qrcodeDialog;
   StreamSubscription? _qrcodeSubscription;
+  StreamSubscription? _webviewSubscription; // 添加webview监听订阅
 
   late Terminal terminal = Terminal(
     maxLines: 10000,
@@ -33,6 +34,8 @@ class HomeController extends GetxController {
     },
   );
   bool webviewHasOpen = false;
+  bool _isAdapterConnected = false; // 适配器连接标志
+  bool _isAppInForeground = true; // 应用是否在前台
 
   File progressFile = File('${RuntimeEnvir.tmpPath}/progress');
   File progressDesFile = File('${RuntimeEnvir.tmpPath}/progress_des');
@@ -72,32 +75,54 @@ EOF
 
   // 监听输出，当输出中包含启动成功的标志时，启动 Code Server
   // Listen for output and start the Code Server when the success flag is detected
-  Future<void> astrBotStartWhenSuccessBind() async {
-    terminal.writeProgress('${S.current.listen_vscode_start}...');
-    final Completer completer = Completer();
-    Utf8Decoder decoder = const Utf8Decoder(allowMalformed: true);
-    pseudoTerminal!.output.cast<List<int>>().transform(decoder).listen((event) async {
-      if (event.contains('Napcat ${S.current.installed}')) {
-        napcatTerminal?.writeString('$command\n');
-        bumpProgress();
-      }
+  void initWebviewListener() {
+    if (pseudoTerminal == null) return;
 
-      if (event.contains('适配器已连接')) {
-        Log.e(event);
-        if (!completer.isCompleted) {
-          completer.complete();
+    _webviewSubscription = pseudoTerminal!.output.cast<List<int>>().transform(const Utf8Decoder(allowMalformed: true)).listen((event) async {
+      try {
+        // 先判断订阅是否已取消，避免重复处理
+        if (_webviewSubscription == null) return;
+
+        if (event.contains('Napcat ${S.current.installed}')) {
+          napcatTerminal?.writeString('$command\n');
+          bumpProgress();
         }
+
+        // 检查是否包含适配器连接成功的标志
+        if (event.contains('适配器已连接')) {
+          Log.e('Adapter connected event detected: $event');
+          _isAdapterConnected = true;
+          bumpProgress();
+          
+          // 如果应用当前在前台，则立即打开webview
+          if (_isAppInForeground) {
+            Future.microtask(() {
+              openWebView();
+              webviewHasOpen = true; // 只有真正打开webview时才设置为true
+            });
+          }
+
+          Future.delayed(const Duration(milliseconds: 2000), () {
+            update();
+          });
+
+          // 取消订阅，后续不再监听
+          await _webviewSubscription?.cancel();
+          _webviewSubscription = null; // 置空标记已取消
+        }
+        terminal.write(event);
+      } catch (e, stackTrace) {
+        Log.e('Error in webview listener: $e\nStack trace: $stackTrace');
       }
-      terminal.write(event);
-    });
-    await completer.future;
-    bumpProgress();
-
-    webviewHasOpen = true;
-    openWebView();
-
-    Future.delayed(const Duration(milliseconds: 2000), () {
-      update();
+    }, onError: (error) {
+      Log.e('Webview listener stream error: $error');
+      // 确保在错误情况下也能清理资源
+      _webviewSubscription?.cancel();
+      _webviewSubscription = null;
+    }, onDone: () {
+      Log.i('Webview listener stream completed');
+      // 确保在完成情况下也能清理资源
+      _webviewSubscription = null;
     });
   }
 
@@ -291,7 +316,7 @@ EOF
     // 写入并执行脚本
     File('${RuntimeEnvir.homePath}/common.sh').writeAsStringSync('$commonScript');
 
-    astrBotStartWhenSuccessBind();
+    initWebviewListener();
     bumpProgress();
 
     initQrcodeListener();
@@ -323,5 +348,64 @@ EOF
       // 加载并启动 AstrBot
       loadAstrBot();
     });
+    
+    // 监听应用生命周期状态变化
+    WidgetsBinding.instance.addObserver(
+      LifecycleObserver(
+        onResume: () {
+          _isAppInForeground = true;
+          // 当应用回到前台且适配器已连接但webview未打开时，打开webview
+          if (_isAdapterConnected && !webviewHasOpen) {
+            Future.microtask(() {
+              openWebView();
+              webviewHasOpen = true;
+            });
+          }
+        },
+        onPause: () {
+          _isAppInForeground = false;
+        },
+      ),
+    );
+  }
+
+  @override
+  void onClose() {
+    // 清理订阅，避免内存泄漏
+    _qrcodeSubscription?.cancel();
+    _webviewSubscription?.cancel();
+    _qrcodeSubscription = null;
+    _webviewSubscription = null;
+    // 移除生命周期观察者
+    WidgetsBinding.instance.removeObserver(
+      LifecycleObserver(
+        onResume: () {},
+        onPause: () {},
+      ),
+    );
+    super.onClose();
+  }
+}
+
+// 应用生命周期观察者类
+class LifecycleObserver extends WidgetsBindingObserver {
+  final VoidCallback onResume;
+  final VoidCallback onPause;
+  
+  LifecycleObserver({required this.onResume, required this.onPause});
+  
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    switch (state) {
+      case AppLifecycleState.resumed:
+        onResume();
+        break;
+      case AppLifecycleState.paused:
+        onPause();
+        break;
+      default:
+        break;
+    }
   }
 }
