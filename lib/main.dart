@@ -7,12 +7,20 @@ import 'package:get/get.dart';
 import 'package:global_repository/global_repository.dart';
 import 'package:settings/settings.dart';
 import 'package:astrbot_android/terminal_page.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'generated/l10n.dart';
 
 // Notice: behavior will submit Device
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // 检查并请求通知权限
+  var status = await Permission.notification.status;
+  if (status.isDenied || status.isPermanentlyDenied) {
+    await Permission.notification.request();
+  }
+  
   // 隐藏系统 UI
   // Hide system UI
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: [
