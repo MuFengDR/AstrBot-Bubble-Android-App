@@ -18,6 +18,7 @@ import '../routes/app_routes.dart';
 class HomeController extends GetxController {
   // bool vsCodeStaring = false;
   SettingNode privacySetting = 'privacy'.setting;
+  SettingNode lastQQNumber = 'last_qq_number'.setting;
   Pty? pseudoTerminal;
   Pty? napcatTerminal;
 
@@ -69,7 +70,11 @@ class HomeController extends GetxController {
   // 使用 login_ubuntu 函数，传入要执行的命令
   // Use login_ubuntu function, passing the command to execute
   // 添加 -q 参数启用快速登录，如果有保存的登录状态会自动使用
-  String get command => 'source ${RuntimeEnvir.homePath}/common.sh\nlogin_ubuntu "\$*\nbash launcher.sh -q"\n';
+  String get command {
+    final savedQQ = lastQQNumber.get();
+    final quickLogin = savedQQ != null ? '-q $savedQQ' : '';
+    return 'source ${RuntimeEnvir.homePath}/common.sh\nlogin_ubuntu "bash /root/launcher.sh $quickLogin"\n';
+  }
 
   // 监听输出，当输出中包含启动成功的标志时，启动 Code Server
   // Listen for output and start the Code Server when the success flag is detected
@@ -87,7 +92,6 @@ class HomeController extends GetxController {
         final lines = event.split('\n');
         for (var line in lines) {
           if (line.trim().isNotEmpty) {
-            print('[AstrBot Script] $line');
             Log.i(line, tag: 'AstrBot');
           }
         }
@@ -138,7 +142,6 @@ class HomeController extends GetxController {
         final lines = event.split('\n');
         for (var line in lines) {
           if (line.trim().isNotEmpty) {
-            print('[AstrBot Napcat] $line');
             Log.i(line, tag: 'AstrBot-Napcat');
           }
         }
@@ -153,6 +156,16 @@ class HomeController extends GetxController {
             napCatWebUiToken.value = token;
             Log.i('捕获到 NapCat Token: $token', tag: 'AstrBot');
           }
+        }
+      }
+
+      // 捕获可用于快速登录的 QQ 号（格式如 "1. 3639403092 Operer"）
+      final qqMatch = RegExp(r'^\d+\.\s+(\d+)\s+\w+', multiLine: true).firstMatch(event);
+      if (qqMatch != null && event.contains('可用于快速登录')) {
+        final qqNumber = qqMatch.group(1);
+        if (qqNumber != null) {
+          lastQQNumber.set(qqNumber);
+          Log.i('保存 QQ 号用于下次快速登录: $qqNumber', tag: 'AstrBot');
         }
       }
 

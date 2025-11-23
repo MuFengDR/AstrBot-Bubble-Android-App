@@ -225,6 +225,7 @@ EOF
 install_astrbot(){
   local INSTALL_DIR="$HOME/AstrBot"
   local CLONE_TEMP_DIR="$HOME/AstrBot_tmp"
+  local BACKUP_DIR="/sdcard/Download/AstrBot"
   
   rm -rf "$CLONE_TEMP_DIR"
 
@@ -246,9 +247,37 @@ install_astrbot(){
     fi
     
     mkdir "$CLONE_TEMP_DIR/data"
-    cp cmd_config.json "$CLONE_TEMP_DIR/data"
-    chmod +w "$CLONE_TEMP_DIR/data/cmd_config.json"
-    echo "拷贝 cmd_config.json 默认配置文件"
+    
+    # 检查并恢复最新备份
+    if [ -d "$BACKUP_DIR" ]; then
+      echo "扫描备份目录: $BACKUP_DIR"
+      LATEST_BACKUP=$(ls -t "$BACKUP_DIR"/AstrBot-backup-*.tar.gz 2>/dev/null | head -n 1)
+      
+      if [ -n "$LATEST_BACKUP" ]; then
+        echo "找到备份文件: $LATEST_BACKUP"
+        progress_echo "恢复 AstrBot 数据备份..."
+        
+        # 解压备份到 data 目录
+        if tar -xzf "$LATEST_BACKUP" -C "$CLONE_TEMP_DIR"; then
+          echo "备份恢复成功"
+          progress_echo "AstrBot 数据已从备份恢复"
+        else
+          echo "备份恢复失败，使用默认配置"
+          cp cmd_config.json "$CLONE_TEMP_DIR/data"
+          chmod +w "$CLONE_TEMP_DIR/data/cmd_config.json"
+        fi
+      else
+        echo "未找到备份文件，使用默认配置"
+        cp cmd_config.json "$CLONE_TEMP_DIR/data"
+        chmod +w "$CLONE_TEMP_DIR/data/cmd_config.json"
+        echo "拷贝 cmd_config.json 默认配置文件"
+      fi
+    else
+      echo "备份目录不存在，使用默认配置"
+      cp cmd_config.json "$CLONE_TEMP_DIR/data"
+      chmod +w "$CLONE_TEMP_DIR/data/cmd_config.json"
+      echo "拷贝 cmd_config.json 默认配置文件"
+    fi
 
     # 原子性重命名
     mv "$CLONE_TEMP_DIR" "$INSTALL_DIR"
