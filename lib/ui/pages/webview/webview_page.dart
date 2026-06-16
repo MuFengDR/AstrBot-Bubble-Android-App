@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
@@ -11,9 +12,21 @@ import '../settings/settings_page.dart';
 import '../terminal/terminal_tab_view.dart';
 import '../../navbar/bottom_nav_bar.dart';
 import '../../../core/services/password_manager.dart';
+import '../../../core/config/service_ports.dart';
 
 class WebViewPage extends StatefulWidget {
-  const WebViewPage({super.key});
+  final bool embedded;
+
+  const WebViewPage({super.key, this.embedded = false});
+
+  static WebViewController? _astrBotController;
+  static WebViewController? _napCatController;
+
+  static WebViewController get astrBotController =>
+      _astrBotController ??= WebViewController();
+
+  static WebViewController get napCatController =>
+      _napCatController ??= WebViewController();
 
   @override
   State<WebViewPage> createState() => _WebViewPageState();
@@ -25,7 +38,10 @@ class _WebViewPageState extends State<WebViewPage> {
 
   late final WebViewController _astrBotController;
   late final WebViewController _napCatController;
-  final Map<String, WebViewController> _customControllers = {}; // 存储自定义 WebView 控制器，使用 URL 作为 key
+  final Map<String, WebViewController> _customControllers =
+      {}; // 存储自定义 WebView 控制器，使用 URL 作为 key
+  Worker? _customWebViewsWorker;
+  Worker? _napCatTokenWorker;
 
   final HomeController homeController = Get.find<HomeController>();
 
@@ -36,15 +52,26 @@ class _WebViewPageState extends State<WebViewPage> {
   @override
   void initState() {
     super.initState();
+    final args = Get.arguments;
+    if (args is Map && args['openSettings'] == true) {
+      _currentIndex = 9999;
+    } else if (args is Map && args['openTerminal'] == true) {
+      _currentIndex = 9998;
+    }
     _initSystemUI();
+    _astrBotController = WebViewPage.astrBotController;
+    _napCatController = WebViewPage.napCatController;
     _initAstrBotController();
     _initNapCatController();
 
     // 监听自定义 WebView 列表变化,清理已删除的控制器
-    ever(homeController.customWebViews, (List<Map<String, String>> webviews) {
+    _customWebViewsWorker = ever(homeController.customWebViews,
+        (List<Map<String, String>> webviews) {
       // 清理不再存在的控制器
       final validUrls = webviews.map((wv) => wv['url'] ?? '').toSet();
-      final controllersToRemove = _customControllers.keys.where((key) => !validUrls.contains(key)).toList();
+      final controllersToRemove = _customControllers.keys
+          .where((key) => !validUrls.contains(key))
+          .toList();
       for (final key in controllersToRemove) {
         _customControllers.remove(key);
       }
@@ -53,6 +80,8 @@ class _WebViewPageState extends State<WebViewPage> {
 
   @override
   void dispose() {
+    _customWebViewsWorker?.dispose();
+    _napCatTokenWorker?.dispose();
     _restoreSystemUI();
     super.dispose();
   }
@@ -80,11 +109,11 @@ class _WebViewPageState extends State<WebViewPage> {
       final host = uri.host.toLowerCase();
       // 检查是否为本地地址
       return host == 'localhost' ||
-             host == '127.0.0.1' ||
-             host == '0.0.0.0' ||
-             host.startsWith('192.168.') ||
-             host.startsWith('10.') ||
-             (host.startsWith('172.') && _isPrivateIp172(host));
+          host == '127.0.0.1' ||
+          host == '0.0.0.0' ||
+          host.startsWith('192.168.') ||
+          host.startsWith('10.') ||
+          (host.startsWith('172.') && _isPrivateIp172(host));
     } catch (e) {
       debugPrint('Error parsing URL: $e');
       return false;
@@ -133,7 +162,7 @@ class _WebViewPageState extends State<WebViewPage> {
   }
 
   void _initAstrBotController() {
-    _astrBotController = WebViewController()
+    _astrBotController
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(Colors.white)
       ..setNavigationDelegate(
@@ -157,13 +186,13 @@ class _WebViewPageState extends State<WebViewPage> {
           },
         ),
       )
-      ..loadRequest(Uri.parse('http://127.0.0.1:6185'));
+      ..loadRequest(Uri.parse(ServicePorts.dashboardUrl));
 
     if (_astrBotController.platform is AndroidWebViewController) {
-      AndroidWebViewController.enableDebugging(true);
-      final androidController = _astrBotController.platform as AndroidWebViewController;
-      androidController
-          .setMediaPlaybackRequiresUserGesture(false);
+      AndroidWebViewController.enableDebugging(kDebugMode);
+      final androidController =
+          _astrBotController.platform as AndroidWebViewController;
+      androidController.setMediaPlaybackRequiresUserGesture(false);
       // 设置混合内容模式以提高兼容性（Android 9+ 需要）
       androidController.setMixedContentMode(MixedContentMode.compatibilityMode);
       // 允许访问本地文件和内容
@@ -190,7 +219,7 @@ class _WebViewPageState extends State<WebViewPage> {
   }
 
   void _initNapCatController() {
-    _napCatController = WebViewController()
+    _napCatController
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(Colors.white)
       ..setNavigationDelegate(
@@ -215,26 +244,27 @@ class _WebViewPageState extends State<WebViewPage> {
       );
 
     // 监听 Token 变化
-    ever(homeController.napCatWebUiToken, (String token) {
+    _napCatTokenWorker = ever(homeController.napCatWebUiToken, (String token) {
       if (token.isNotEmpty) {
-        final url = 'http://127.0.0.1:6099/webui?token=$token';
+        final url = '${ServicePorts.napCatWebUiUrl}?token=$token';
         _napCatController.loadRequest(Uri.parse(url));
       }
     });
 
     // 初始加载
     if (homeController.napCatWebUiToken.isNotEmpty) {
-      final url = 'http://127.0.0.1:6099/webui?token=${homeController.napCatWebUiToken.value}';
+      final url =
+          '${ServicePorts.napCatWebUiUrl}?token=${homeController.napCatWebUiToken.value}';
       _napCatController.loadRequest(Uri.parse(url));
     } else {
-      _napCatController.loadRequest(Uri.parse('http://127.0.0.1:6099/webui'));
+      _napCatController.loadRequest(Uri.parse(ServicePorts.napCatWebUiUrl));
     }
 
     if (_napCatController.platform is AndroidWebViewController) {
-      AndroidWebViewController.enableDebugging(true);
-      final androidController = _napCatController.platform as AndroidWebViewController;
-      androidController
-          .setMediaPlaybackRequiresUserGesture(false);
+      AndroidWebViewController.enableDebugging(kDebugMode);
+      final androidController =
+          _napCatController.platform as AndroidWebViewController;
+      androidController.setMediaPlaybackRequiresUserGesture(false);
       // 设置混合内容模式以提高兼容性（Android 9+ 需要）
       androidController.setMixedContentMode(MixedContentMode.compatibilityMode);
       // 允许访问本地文件和内容
@@ -269,7 +299,8 @@ class _WebViewPageState extends State<WebViewPage> {
           onNavigationRequest: (NavigationRequest request) {
             // 仅对配置为本地URL的WebView启用外域拦截
             if (shouldInterceptExternal && !_isLocalUrl(request.url)) {
-              debugPrint('Intercepting external URL from custom WebView: ${request.url}');
+              debugPrint(
+                  'Intercepting external URL from custom WebView: ${request.url}');
               _launchInBrowser(request.url);
               return NavigationDecision.prevent;
             }
@@ -287,7 +318,7 @@ class _WebViewPageState extends State<WebViewPage> {
       ..loadRequest(Uri.parse(url));
 
     if (controller.platform is AndroidWebViewController) {
-      AndroidWebViewController.enableDebugging(true);
+      AndroidWebViewController.enableDebugging(kDebugMode);
       final androidController = controller.platform as AndroidWebViewController;
       androidController.setMediaPlaybackRequiresUserGesture(false);
       androidController.setMixedContentMode(MixedContentMode.compatibilityMode);
@@ -337,21 +368,57 @@ class _WebViewPageState extends State<WebViewPage> {
 
         // 检查是否只接受图片
         final bool isImageOnly = acceptTypes.every((type) =>
-          type.startsWith('image/') ||
-          ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'].contains(type.toLowerCase())
-        );
+            type.startsWith('image/') ||
+            [
+              'jpg',
+              'jpeg',
+              'png',
+              'gif',
+              'webp',
+              'bmp',
+              '.jpg',
+              '.jpeg',
+              '.png',
+              '.gif',
+              '.webp',
+              '.bmp'
+            ].contains(type.toLowerCase()));
 
         // 检查是否只接受视频
         final bool isVideoOnly = acceptTypes.every((type) =>
-          type.startsWith('video/') ||
-          ['mp4', 'avi', 'mov', 'mkv', 'flv', 'wmv', '.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv'].contains(type.toLowerCase())
-        );
+            type.startsWith('video/') ||
+            [
+              'mp4',
+              'avi',
+              'mov',
+              'mkv',
+              'flv',
+              'wmv',
+              '.mp4',
+              '.avi',
+              '.mov',
+              '.mkv',
+              '.flv',
+              '.wmv'
+            ].contains(type.toLowerCase()));
 
         // 检查是否只接受音频
         final bool isAudioOnly = acceptTypes.every((type) =>
-          type.startsWith('audio/') ||
-          ['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', '.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac'].contains(type.toLowerCase())
-        );
+            type.startsWith('audio/') ||
+            [
+              'mp3',
+              'wav',
+              'ogg',
+              'flac',
+              'm4a',
+              'aac',
+              '.mp3',
+              '.wav',
+              '.ogg',
+              '.flac',
+              '.m4a',
+              '.aac'
+            ].contains(type.toLowerCase()));
 
         if (isImageOnly) {
           result = await FilePicker.platform.pickFiles(
@@ -405,20 +472,18 @@ class _WebViewPageState extends State<WebViewPage> {
 
       // 返回选中的文件路径,转换为 file:// URI 格式
       if (result != null && result.files.isNotEmpty) {
-        final List<String> filePaths = result.files
-            .where((file) => file.path != null)
-            .map((file) {
-              final path = file.path!;
-              // 如果路径已经是 file:// 开头,直接返回
-              if (path.startsWith('file://')) {
-                return path;
-              }
-              // 否则转换为 file:// URI
-              // 在 Windows 上路径可能包含反斜杠,需要替换为正斜杠
-              final normalizedPath = path.replaceAll('\\', '/');
-              return 'file://$normalizedPath';
-            })
-            .toList();
+        final List<String> filePaths =
+            result.files.where((file) => file.path != null).map((file) {
+          final path = file.path!;
+          // 如果路径已经是 file:// 开头,直接返回
+          if (path.startsWith('file://')) {
+            return path;
+          }
+          // 否则转换为 file:// URI
+          // 在 Windows 上路径可能包含反斜杠,需要替换为正斜杠
+          final normalizedPath = path.replaceAll('\\', '/');
+          return 'file://$normalizedPath';
+        }).toList();
 
         debugPrint('Selected files: $filePaths');
         return filePaths;
@@ -433,9 +498,10 @@ class _WebViewPageState extends State<WebViewPage> {
 
   void _injectClipboardScript(WebViewController controller) {
     const String jsCode = '''
+      if (!window.__astrbotClipboardPatched) {
+        window.__astrbotClipboardPatched = true;
       const originalReadText = navigator.clipboard.readText;
       navigator.clipboard.readText = function () {
-        console.log('Intercepted clipboard read');
         return new Promise((resolve) => {
           Android.postMessage('getClipboardData');
           setTimeout(() => {
@@ -445,6 +511,7 @@ class _WebViewPageState extends State<WebViewPage> {
           }, 100);
         });
       };
+      }
     ''';
     controller.runJavaScript(jsCode);
   }
@@ -452,6 +519,8 @@ class _WebViewPageState extends State<WebViewPage> {
   void _disableZoom(WebViewController controller) {
     const String jsCode = '''
       (function() {
+        if (window.__astrbotZoomPatched) return;
+        window.__astrbotZoomPatched = true;
         var meta = document.querySelector('meta[name="viewport"]');
         if (meta) {
           meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
@@ -494,6 +563,8 @@ class _WebViewPageState extends State<WebViewPage> {
 
     final String jsCode = '''
       (function() {
+        if (window.__astrbotPasswordPatched) return;
+        window.__astrbotPasswordPatched = true;
         // 自动填充已保存的密码
         ${savedPassword != null ? '''
         function autoFillPassword() {
@@ -616,36 +687,30 @@ class _WebViewPageState extends State<WebViewPage> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
+    if (widget.embedded) {
+      return _buildEmbeddedWebUiPage();
+    }
+
     return Obx(() {
       // 检查 NapCat WebUI 是否启用
       final bool napCatEnabled = homeController.napCatWebUiEnabledRx.value;
       final customWebViews = homeController.customWebViews;
 
-      // 动态构建页面列表
-      final List<Widget> pages = [
-        // 1. AstrBot 配置页面
-        WebViewWidget(controller: _astrBotController),
-
-        // 2. NapCat 配置页面（仅在启用时添加）
-        if (napCatEnabled) WebViewWidget(controller: _napCatController),
-
-        // 3. 自定义 WebView 页面
-        ...List.generate(customWebViews.length, (index) {
-          final webview = customWebViews[index];
-          final url = webview['url'] ?? '';
-          return WebViewWidget(
-            controller: _getCustomController(url),
-          );
-        }),
-      ];
+      final pageCount = 2 + customWebViews.length + (napCatEnabled ? 1 : 0);
 
       // 计算设置页的索引（终端页在倒数第二，设置页在最后）
-      final int settingsIndex = pages.length + 1;
-      final int currentNavItemCount = pages.length + 2; // 总导航项数量
+      final int settingsIndex = pageCount + 1;
+      final int currentNavItemCount = pageCount + 2; // 总导航项数量
 
       // 最简单的逻辑：导航栏数量变化时，直接锁定焦点到最大值（设置页）
       int validCurrentIndex = _currentIndex;
-      if (_previousNavItemCount != 0 && _previousNavItemCount != currentNavItemCount) {
+      if (validCurrentIndex == 9998) {
+        validCurrentIndex = settingsIndex - 1;
+      } else if (validCurrentIndex > settingsIndex) {
+        validCurrentIndex = settingsIndex;
+      }
+      if (_previousNavItemCount != 0 &&
+          _previousNavItemCount != currentNavItemCount) {
         // 导航栏数量发生变化，锁定到设置页
         validCurrentIndex = settingsIndex;
         _previousNavItemCount = currentNavItemCount;
@@ -672,25 +737,10 @@ class _WebViewPageState extends State<WebViewPage> {
           backgroundColor: Colors.white,
           body: SafeArea(
             top: true,
-            child: IndexedStack(
-              index: validCurrentIndex,
-              children: [
-                ...pages,
-
-                // 4. 终端页面（使用新的标签页视图）
-                const TerminalTabView(),
-
-                // 5. 软件设置页面
-                SettingsPage(
-                  astrBotController: _astrBotController,
-                  napCatController: _napCatController,
-                  onNavigate: (index) {
-                    setState(() {
-                      _currentIndex = index;
-                    });
-                  },
-                ),
-              ],
+            child: _buildVisiblePage(
+              validCurrentIndex,
+              napCatEnabled,
+              customWebViews,
             ),
           ),
           bottomNavigationBar: WebViewBottomNavBar(
@@ -705,4 +755,376 @@ class _WebViewPageState extends State<WebViewPage> {
       );
     });
   }
+
+  Widget _buildVisiblePage(
+    int index,
+    bool napCatEnabled,
+    List<Map<String, String>> customWebViews,
+  ) {
+    if (index == 0) {
+      return WebViewWidget(controller: _astrBotController);
+    }
+
+    var cursor = 1;
+    if (napCatEnabled) {
+      if (index == cursor) {
+        return WebViewWidget(controller: _napCatController);
+      }
+      cursor++;
+    }
+
+    for (var i = 0; i < customWebViews.length; i++) {
+      if (index == cursor + i) {
+        final url = customWebViews[i]['url'] ?? '';
+        return WebViewWidget(controller: _getCustomController(url));
+      }
+    }
+
+    final terminalIndex = cursor + customWebViews.length;
+    if (index == terminalIndex) {
+      return const TerminalTabView();
+    }
+
+    final settingsIndex = terminalIndex + 1;
+    if (index == settingsIndex) {
+      return SettingsPage(
+        astrBotController: _astrBotController,
+        napCatController: _napCatController,
+      );
+    }
+
+    return const SizedBox.shrink();
+  }
+
+  Widget _buildEmbeddedWebUiPage() {
+    return Obx(() {
+      final targets = _buildWebUiTargets();
+      if (targets.isEmpty) {
+        return Column(
+          children: [
+            _buildWebUiTabBar(targets, 0),
+            const Expanded(
+              child: Center(
+                child: Text('暂无 WebUI 标签，点击右上角 + 添加'),
+              ),
+            ),
+          ],
+        );
+      }
+
+      final maxIndex = targets.length - 1;
+      var selectedIndex = _currentIndex.clamp(0, maxIndex).toInt();
+      final pendingTargetId = homeController.pendingWebUiTargetId.value;
+      if (pendingTargetId != null && pendingTargetId.isNotEmpty) {
+        final pendingIndex = targets.indexWhere(
+          (target) => target.id == pendingTargetId,
+        );
+        if (pendingIndex >= 0) {
+          selectedIndex = pendingIndex;
+          _restoreWebUiTargetIfNeeded(targets[pendingIndex]);
+          _loadWebUiTargetUrl(targets[pendingIndex]);
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            setState(() {
+              _currentIndex = pendingIndex;
+            });
+            homeController.clearPendingWebUiTargetId(pendingTargetId);
+          });
+        } else {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            homeController.clearPendingWebUiTargetId(pendingTargetId);
+          });
+        }
+      }
+      if (selectedIndex != _currentIndex) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            setState(() {
+              _currentIndex = selectedIndex;
+            });
+          }
+        });
+      }
+
+      return Column(
+        children: [
+          _buildWebUiTabBar(targets, selectedIndex),
+          Expanded(
+            child: IndexedStack(
+              index: selectedIndex,
+              children: targets
+                  .map(
+                    (target) => WebViewWidget(controller: target.controller),
+                  )
+                  .toList(),
+            ),
+          ),
+        ],
+      );
+    });
+  }
+
+  Widget _buildWebUiTabBar(List<_WebUiTarget> targets, int selectedIndex) {
+    return Container(
+      height: 52,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        border: Border(
+          bottom: BorderSide(color: Theme.of(context).dividerColor),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: targets.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              itemBuilder: (context, index) {
+                final target = targets[index];
+                final selected = index == selectedIndex;
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: GestureDetector(
+                    child: InputChip(
+                      selected: selected,
+                      showCheckmark: false,
+                      label: Text(target.title),
+                      avatar: Icon(target.icon, size: 18),
+                      deleteIcon: const Icon(Icons.close, size: 18),
+                      onDeleted: () => _confirmCloseWebUiTarget(target),
+                      onSelected: (_) {
+                        setState(() {
+                          _currentIndex = index;
+                        });
+                      },
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          IconButton(
+            tooltip: '添加自定义 WebUI',
+            onPressed: _showAddEmbeddedWebUiDialog,
+            icon: const Icon(Icons.add),
+          ),
+          IconButton(
+            tooltip: '刷新当前 WebUI',
+            onPressed: targets.isEmpty
+                ? null
+                : () => _refreshWebUiTarget(targets[selectedIndex]),
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<_WebUiTarget> _buildWebUiTargets() {
+    final hidden = homeController.hiddenWebUiTargetIds.toSet();
+    final targets = <_WebUiTarget>[];
+
+    if (!hidden.contains('astrbot')) {
+      targets.add(_WebUiTarget(
+        id: 'astrbot',
+        title: 'AstrBot',
+        icon: Icons.smart_toy,
+        url: ServicePorts.dashboardUrl,
+        controller: _astrBotController,
+      ));
+    }
+
+    for (final instance in homeController.napCatInstances) {
+      final id = 'napcat:${instance['id'] ?? ''}';
+      if (hidden.contains(id)) continue;
+      final title = instance['name']?.toString() ?? 'NapCat';
+      final url = homeController.napCatInstanceWebUiUrl(instance);
+      final controller = _getCustomController(url);
+      targets.add(
+        _WebUiTarget(
+          id: id,
+          title: title,
+          icon: Icons.account_circle,
+          url: url,
+          controller: controller,
+        ),
+      );
+    }
+
+    for (var i = 0; i < homeController.customWebViews.length; i++) {
+      final webview = homeController.customWebViews[i];
+      final url = webview['url'] ?? '';
+      if (url.isEmpty) continue;
+      final controller = _getCustomController(url);
+      targets.add(
+        _WebUiTarget(
+          id: 'custom:$url',
+          title: webview['title'] ?? 'WebUI',
+          icon: Icons.language,
+          url: url,
+          controller: controller,
+          customWebViewIndex: i,
+        ),
+      );
+    }
+
+    return targets;
+  }
+
+  Future<void> _showAddEmbeddedWebUiDialog() async {
+    final titleController = TextEditingController();
+    final urlController = TextEditingController();
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('添加自定义 WebUI'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: titleController,
+              decoration: const InputDecoration(
+                labelText: '标题',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: urlController,
+              keyboardType: TextInputType.url,
+              decoration: const InputDecoration(
+                labelText: 'URL',
+                helperText: '自动添加前缀 http://127.0.0.1:\n若需使用 https，请输入完整 URL',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('添加'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != true) {
+      titleController.dispose();
+      urlController.dispose();
+      return;
+    }
+
+    final title = titleController.text.trim();
+    var url = urlController.text.trim();
+    titleController.dispose();
+    urlController.dispose();
+
+    if (title.isEmpty || url.isEmpty) {
+      Get.snackbar(
+        '输入错误',
+        '标题和 URL 不能为空',
+        snackPosition: SnackPosition.BOTTOM,
+        duration: const Duration(seconds: 2),
+      );
+      return;
+    }
+
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      url = 'http://127.0.0.1:$url';
+    }
+
+    homeController.addCustomWebView(title, url);
+    Get.snackbar(
+      '添加成功',
+      '自定义 WebUI "$title" 已添加',
+      snackPosition: SnackPosition.BOTTOM,
+      duration: const Duration(seconds: 2),
+    );
+  }
+
+  Future<void> _confirmCloseWebUiTarget(_WebUiTarget target) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('关闭标签'),
+        content: Text('关闭 WebUI 标签 "${target.title}" 吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    final customIndex = target.customWebViewIndex;
+    if (customIndex == null) {
+      homeController.hideWebUiTarget(target.id);
+    } else {
+      homeController.removeCustomWebView(customIndex);
+    }
+    await _releaseWebUiTargetResources(target);
+
+    if (_currentIndex > 0) {
+      setState(() {
+        _currentIndex -= 1;
+      });
+    }
+  }
+
+  Future<void> _releaseWebUiTargetResources(_WebUiTarget target) async {
+    if (target.id == 'astrbot') {
+      await _astrBotController.clearCache();
+      await _astrBotController.loadRequest(Uri.parse('about:blank'));
+      return;
+    }
+    if (target.id.startsWith('napcat:') || target.customWebViewIndex != null) {
+      final controller = _customControllers.remove(target.url);
+      await controller?.clearCache();
+    }
+  }
+
+  void _restoreWebUiTargetIfNeeded(_WebUiTarget target) {
+    if (target.id == 'astrbot') {
+      _astrBotController.loadRequest(Uri.parse(ServicePorts.dashboardUrl));
+    }
+  }
+
+  Future<void> _loadWebUiTargetUrl(_WebUiTarget target) async {
+    await target.controller.loadRequest(Uri.parse(target.url));
+  }
+
+  Future<void> _refreshWebUiTarget(_WebUiTarget target) async {
+    await target.controller.reload();
+  }
+}
+
+class _WebUiTarget {
+  final String id;
+  final String title;
+  final IconData icon;
+  final String url;
+  final WebViewController controller;
+  final int? customWebViewIndex;
+
+  const _WebUiTarget({
+    required this.id,
+    required this.title,
+    required this.icon,
+    required this.url,
+    required this.controller,
+    this.customWebViewIndex,
+  });
 }

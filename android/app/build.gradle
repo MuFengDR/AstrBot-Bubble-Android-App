@@ -37,7 +37,7 @@ android {
     }
 
     defaultConfig {
-        applicationId 'com.astrbot.astrbot_android'
+        applicationId 'com.astrbot.astrbot_bubble'
         minSdk = 24
         targetSdk = 35
         versionCode = flutter.versionCode
@@ -46,6 +46,18 @@ android {
 
     lintOptions {
         disable 'InvalidPackage'
+    }
+
+    flavorDimensions "distribution"
+    productFlavors {
+        normal {
+            dimension "distribution"
+        }
+        profileTest {
+            dimension "distribution"
+            applicationIdSuffix ".profile"
+            resValue "string", "app_name", "AstrBot泡泡版"
+        }
     }
 
     buildTypes {
@@ -59,10 +71,20 @@ android {
             }
         }
         debug {
+            applicationIdSuffix ".debug"
+            resValue "string", "app_name", "AstrBot泡泡版"
             signingConfig hasKeystoreFile ? signingConfigs.release : signingConfigs.debug
             minifyEnabled false
             shrinkResources false
             // 禁用对特定原生库的strip操作，避免处理错误
+            packagingOptions {
+                doNotStrip '**/libsudo.so'
+            }
+        }
+        profile {
+            signingConfig hasKeystoreFile ? signingConfigs.release : signingConfigs.debug
+            minifyEnabled false
+            shrinkResources false
             packagingOptions {
                 doNotStrip '**/libsudo.so'
             }

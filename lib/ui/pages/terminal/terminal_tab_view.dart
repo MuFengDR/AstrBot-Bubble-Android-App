@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:xterm/xterm.dart';
 
@@ -16,6 +17,39 @@ class TerminalTabView extends StatefulWidget {
 
 class _TerminalTabViewState extends State<TerminalTabView> {
   final HomeController homeController = Get.find<HomeController>();
+
+  void _showTopSnack(BuildContext context, String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        margin: EdgeInsets.only(
+          left: 16,
+          right: 16,
+          bottom: MediaQuery.of(context).size.height - 170,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _copyActiveTerminalLog(
+    BuildContext context,
+    TerminalTabManager manager,
+  ) async {
+    final tab = manager.activeTab;
+    final text = tab?.type == TerminalTabType.fixed
+        ? homeController.startupLogText.trim()
+        : (tab?.logText.trim() ?? '');
+
+    if (text.isEmpty) {
+      _showTopSnack(context, '暂无日志可复制');
+      return;
+    }
+
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!context.mounted) return;
+    _showTopSnack(context, '日志已复制');
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -88,6 +122,12 @@ class _TerminalTabViewState extends State<TerminalTabView> {
 
           // 添加新终端按钮
           IconButton(
+            icon: const Icon(Icons.copy),
+            onPressed: () => _copyActiveTerminalLog(context, manager),
+            tooltip: '复制当前终端日志',
+          ),
+
+          IconButton(
             icon: const Icon(Icons.add),
             onPressed: () => manager.addSystemTerminalTab(),
             tooltip: '添加新终端',
@@ -136,7 +176,10 @@ class _TerminalTabViewState extends State<TerminalTabView> {
               size: 16,
               color: isActive
                   ? Theme.of(context).colorScheme.primary
-                  : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+                  : Theme.of(context)
+                      .colorScheme
+                      .onSurface
+                      .withValues(alpha: 0.6),
             ),
             const SizedBox(width: 8),
 
@@ -163,7 +206,10 @@ class _TerminalTabViewState extends State<TerminalTabView> {
                 child: Icon(
                   Icons.close,
                   size: 16,
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+                  color: Theme.of(context)
+                      .colorScheme
+                      .onSurface
+                      .withValues(alpha: 0.6),
                 ),
               ),
             ],

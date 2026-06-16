@@ -8,6 +8,11 @@ CUSTOM_GIT_CLONE=""
 # 重装插件依赖标记（1表示需要重装，执行后自动清除）
 REINSTALL_PLUGINS_FLAG=0
 
+# GitHub 代理选择：
+# auto 表示按列表自动测试；direct 表示直连；其他值视为代理 URL。
+ASTRBOT_GITHUB_PROXY="${ASTRBOT_GITHUB_PROXY:-auto}"
+ASTRBOT_FORCE_REINSTALL_STEP="${ASTRBOT_FORCE_REINSTALL_STEP:-}"
+
 export UV_LINK_MODE=copy
 export UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
 export UV_PYTHON_INSTALL_MIRROR="https://ghfast.top/https://github.com/astral-sh/python-build-standalone/releases/download"
@@ -28,6 +33,41 @@ progress_echo(){
   echo "$@" > "$TMPDIR/progress_des"
 }
 
+prepare_reinstall_step(){
+  case "$1" in
+    uv)
+      progress_echo "uv 重装准备中"
+      rm -f "$HOME/.local/bin/uv" "$HOME/.local/bin/uvx"
+      ;;
+    napcat)
+      progress_echo "NapCat 重装准备中"
+      if [ -d "$HOME/napcat/config" ]; then
+        rm -rf "$HOME/napcat_config_backup"
+        cp -r "$HOME/napcat/config" "$HOME/napcat_config_backup"
+      fi
+      pkill -f 'qq --no-sandbox' 2>/dev/null || true
+      pkill -f 'NapCat' 2>/dev/null || true
+      pkill -f 'napcat' 2>/dev/null || true
+      rm -rf "$HOME/napcat" "$HOME/napcat.sh" "$HOME/launcher.sh"
+      ;;
+    astrbot)
+      progress_echo "AstrBot 重装准备中"
+      killall uv 2>/dev/null || true
+      rm -rf "$HOME/AstrBot_data_reinstall_backup"
+      if [ -d "$HOME/AstrBot/data" ]; then
+        cp -r "$HOME/AstrBot/data" "$HOME/AstrBot_data_reinstall_backup"
+      fi
+      rm -rf "$HOME/AstrBot" "$HOME/AstrBot_tmp"
+      ;;
+  esac
+}
+
+maybe_prepare_reinstall(){
+  if [ "$ASTRBOT_FORCE_REINSTALL_STEP" = "$1" ]; then
+    prepare_reinstall_step "$1"
+  fi
+}
+
 bump_progress(){
   current=0
   if [ -f "$TMPDIR/progress" ]; then
@@ -38,17 +78,40 @@ bump_progress(){
 }
 
 install_sudo_curl_git(){
-  curl_path=`which curl`
-  if [ -z "$curl_path" ]; then
-    progress_echo "curl $L_NOT_INSTALLED, $L_INSTALLING..."
-    apt-get update
-    apt --fix-broken install -y
-    apt-get install -y sudo
-    sudo apt-get install -y git
-    sudo apt-get install -y curl
-  else
-    progress_echo "curl $L_INSTALLED"
+  missing=()
+  for cmd in sudo git curl; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      missing+=("$cmd")
+    fi
+  done
+
+  if [ ${#missing[@]} -eq 0 ]; then
+    progress_echo "基础命令已安装"
+    return 0
   fi
+
+  progress_echo "基础命令缺失: ${missing[*]}, 开始安装..."
+
+  export DEBIAN_FRONTEND=noninteractive
+  apt_opts="-o Acquire::ForceIPv4=true"
+
+  if ! apt-get $apt_opts update; then
+    echo "apt-get update 失败，继续尝试安装..."
+  fi
+
+  if ! apt-get $apt_opts install -y sudo git curl; then
+    echo "基础命令安装失败"
+    return 1
+  fi
+
+  for cmd in sudo git curl; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      echo "基础命令安装后仍缺少: $cmd"
+      return 1
+    fi
+  done
+
+  progress_echo "基础命令安装完成"
 }
 
 network_test() {
@@ -57,6 +120,18 @@ network_test() {
     local found=0
     target_proxy=""
     echo "开始网络测试: Github..."
+
+    if [ "$ASTRBOT_GITHUB_PROXY" = "direct" ]; then
+        echo "已选择 Github 直连"
+        target_proxy=""
+        return 0
+    fi
+
+    if [ -n "$ASTRBOT_GITHUB_PROXY" ] && [ "$ASTRBOT_GITHUB_PROXY" != "auto" ]; then
+        target_proxy="$ASTRBOT_GITHUB_PROXY"
+        echo "已选择 Github 代理: $target_proxy"
+        return 0
+    fi
 
     proxy_arr=("https://ghfast.top" "https://gh.wuliya.xin" "https://gh-proxy.com" "https://github.moeyy.xyz")
     check_url="https://raw.githubusercontent.com/NapNeko/NapCatQQ/main/package.json"
@@ -171,6 +246,13 @@ install_napcat(){
       exit 1
     fi
     bash napcat.sh
+
+    # 环境管理的 NapCat 步骤只做安装，不做登录启动。
+    # 有些上游安装脚本会在安装结束后顺手启动 QQ/NapCat，这里统一收掉，
+    # 后续从主页账号卡片手动启动。
+    pkill -f 'qq --no-sandbox' 2>/dev/null || true
+    pkill -f 'NapCat' 2>/dev/null || true
+    pkill -f 'napcat' 2>/dev/null || true
     
     # 恢复配置目录
     if [ -d "$HOME/napcat_config_backup" ]; then
@@ -183,7 +265,7 @@ install_napcat(){
   # 只在配置文件不存在时写入默认配置
   if [ ! -f "$HOME/napcat/config/onebot11.json" ]; then
     echo "写入 onebot11.json 默认配置文件"
-    cat > "$HOME/napcat/config/onebot11.json" <<'EOF'
+    cat > "$HOME/napcat/config/onebot11.json" <<EOF
 {
   "network": {
     "httpServers": [],
@@ -193,7 +275,7 @@ install_napcat(){
       {
         "name": "WsClient",
         "enable": true,
-        "url": "ws://localhost:6199/ws",
+        "url": "ws://localhost:${ASTRBOT_ONEBOT_WS_PORT:-6199}/ws",
         "messagePostFormat": "array",
         "reportSelfMessage": false,
         "reconnectInterval": 5000,
@@ -210,13 +292,61 @@ install_napcat(){
 EOF
   fi
 fi
+  configure_napcat_token_ttl
   progress_echo "Napcat $L_INSTALLED"
+}
+
+configure_napcat_token_ttl(){
+  if [ -f "$HOME/napcat/napcat.mjs" ]; then
+    sed -i -E "s#static MAX_CREDENTIAL_VALID_SECONDS = [0-9]+#static MAX_CREDENTIAL_VALID_SECONDS = 604800#g" "$HOME/napcat/napcat.mjs"
+    sed -i -E 's#Rp\.set\(`revoked:\$\{r\}`, !0, [0-9]+\)#Rp.set(`revoked:${r}`, !0, 604800)#g' "$HOME/napcat/napcat.mjs"
+  fi
+}
+
+check_astrbot_ready(){
+  local missing=0
+
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "[AstrBot Android] missing dependency: curl"
+    missing=1
+  fi
+
+  if ! command -v git >/dev/null 2>&1; then
+    echo "[AstrBot Android] missing dependency: git"
+    missing=1
+  fi
+
+  if [ ! -x "$HOME/.local/bin/uv" ]; then
+    echo "[AstrBot Android] missing dependency: uv"
+    missing=1
+  fi
+
+  if [ ! -d "$HOME/AstrBot" ]; then
+    echo "[AstrBot Android] missing runtime: AstrBot"
+    missing=1
+  fi
+
+  if [ ! -d "$HOME/AstrBot/.venv" ]; then
+    echo "[AstrBot Android] missing runtime: AstrBot .venv"
+    missing=1
+  elif ! cd "$HOME/AstrBot" || ! "$HOME/.local/bin/uv" run --no-sync python -c "import aiohttp" >/dev/null 2>&1; then
+    echo "[AstrBot Android] missing dependency: aiohttp"
+    missing=1
+  fi
+
+  if [ "$missing" -ne 0 ]; then
+    echo "__ASTRBOT_MANUAL_ENV_REQUIRED__"
+    echo "Environment is not ready. Open Home -> Environment Manager and install the missing steps."
+    return 1
+  fi
+
+  return 0
 }
 
 install_astrbot(){
   local INSTALL_DIR="$HOME/AstrBot"
   local CLONE_TEMP_DIR="$HOME/AstrBot_tmp"
-  local BACKUP_DIR="/sdcard/Download/AstrBot"
+  local BACKUP_DIR="/sdcard/Download/AstrBotBubble"
 
   rm -rf "$CLONE_TEMP_DIR"
 
@@ -283,11 +413,18 @@ install_astrbot(){
 
     echo "检测到 data 目录不存在，初始化数据目录..."
     mkdir "$INSTALL_DIR/data"
+
+    if [ -d "$HOME/AstrBot_data_reinstall_backup" ]; then
+      echo "恢复重装前 AstrBot 数据..."
+      rm -rf "$INSTALL_DIR/data"
+      mv "$HOME/AstrBot_data_reinstall_backup" "$INSTALL_DIR/data"
+      REINSTALL_PLUGINS_FLAG=1
+    else
     
     # 检查并恢复最新备份
     if [ -d "$BACKUP_DIR" ]; then
       echo "扫描备份目录: $BACKUP_DIR"
-      LATEST_BACKUP=$(ls -t "$BACKUP_DIR"/AstrBot-backup-*.tar.gz 2>/dev/null | head -n 1)
+      LATEST_BACKUP=$(ls -t "$BACKUP_DIR"/AstrBotBubble-backup-*.tar.gz 2>/dev/null | head -n 1)
       
       if [ -n "$LATEST_BACKUP" ]; then
         echo "找到备份文件: $LATEST_BACKUP"
@@ -316,12 +453,13 @@ install_astrbot(){
       chmod +w "$INSTALL_DIR/data/cmd_config.json"
       echo "拷贝 cmd_config.json 默认配置文件"
     fi
+    fi
     
     rm -rf "$INSTALL_DIR/.venv"
 
   fi
 
-  if [ ! -d "$INSTALL_DIR/.venv" ]; then
+  if [ ! -d "$INSTALL_DIR/.venv" ] || ! $HOME/.local/bin/uv run --no-sync python -c "import aiohttp" >/dev/null 2>&1; then
 
     # 使用 uv sync 同步依赖
     echo "同步 AstrBot 依赖..."
@@ -356,7 +494,16 @@ install_astrbot(){
     fi
   fi
 
-  # 启动 AstrBot（失败直接退出）
+  progress_echo "AstrBot 安装完成"
+}
+
+launch_astrbot(){
+  local INSTALL_DIR="$HOME/AstrBot"
+
+  if ! check_astrbot_ready; then
+    return 1
+  fi
+
   cd "$INSTALL_DIR"
   if [ ! -f "$HOME/.local/bin/uv" ]; then
     echo "uv 未找到"
@@ -364,7 +511,7 @@ install_astrbot(){
   fi
 
   # 使用 uv run --no-sync main.py 启动（跳过依赖同步）
-  progress_echo "AstrBot 配置中"
+  progress_echo "AstrBot 启动中"
 
   if ! $HOME/.local/bin/uv run --no-sync main.py; then
     echo "AstrBot 启动失败"
@@ -373,13 +520,53 @@ install_astrbot(){
 
 }
 
-install_sudo_curl_git
-bump_progress
-bump_progress
-install_uv
-bump_progress
-install_napcat
-bump_progress
-bump_progress
-bump_progress
-install_astrbot
+run_step(){
+  case "$1" in
+    start)
+      launch_astrbot
+      ;;
+    base)
+      maybe_prepare_reinstall base
+      install_sudo_curl_git
+      ;;
+    uv)
+      maybe_prepare_reinstall uv
+      install_sudo_curl_git
+      install_uv
+      ;;
+    napcat)
+      maybe_prepare_reinstall napcat
+      install_sudo_curl_git
+      install_napcat
+      ;;
+    astrbot)
+      maybe_prepare_reinstall astrbot
+      install_sudo_curl_git
+      install_uv
+      install_astrbot
+      ;;
+    all|"")
+      install_sudo_curl_git
+      bump_progress
+      bump_progress
+      install_uv
+      bump_progress
+      install_napcat
+      bump_progress
+      bump_progress
+      bump_progress
+      install_astrbot
+      ;;
+    *)
+      echo "未知步骤: $1"
+      echo "可用步骤: base uv napcat astrbot ports all"
+      exit 1
+      ;;
+  esac
+}
+
+if [ "$1" = "--step" ]; then
+  run_step "$2"
+else
+  run_step start
+fi

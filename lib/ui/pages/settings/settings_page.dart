@@ -17,13 +17,11 @@ import '../../../core/config/app_config.dart';
 class SettingsPage extends StatefulWidget {
   final WebViewController astrBotController;
   final WebViewController napCatController;
-  final Function(int) onNavigate;
 
   const SettingsPage({
     super.key,
     required this.astrBotController,
     required this.napCatController,
-    required this.onNavigate,
   });
 
   @override
@@ -31,9 +29,13 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
+  static const String _backupDirPath =
+      '/storage/emulated/0/Download/AstrBotBubble';
+  static const String _backupFilePrefix = 'AstrBotBubble-backup-';
+  static const String _backupFileSuffix = '.tar.gz';
+
   String _appVersion = '';
   bool _isBatteryOptimizationIgnored = false;
-  final HomeController homeController = Get.find<HomeController>();
 
   // 存储从GitHub API获取的原始下载URL
   String? _originalDownloadUrl;
@@ -48,7 +50,21 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _loadAppVersion() async {
     final packageInfo = await PackageInfo.fromPlatform();
     setState(() {
-      _appVersion = packageInfo.version;
+      _appVersion = _displayVersion(packageInfo.version);
+    });
+  }
+
+  String _displayVersion(String version) {
+    return version == '0.1.0-bate1' ? '0.1.0 bate1' : version;
+  }
+
+  void _disposeTextControllersSafely(
+    List<TextEditingController> controllers,
+  ) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      for (final controller in controllers) {
+        controller.dispose();
+      }
     });
   }
 
@@ -410,184 +426,6 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  // 显示添加自定义 WebView 对话框
-  void _showAddWebViewDialog() {
-    final titleController = TextEditingController();
-    final urlController = TextEditingController();
-
-    Get.dialog(
-      AlertDialog(
-        title: const Text('添加自定义 WebView'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: titleController,
-              decoration: const InputDecoration(
-                labelText: '标题',
-                hintText: '例如：我的仪表盘',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: urlController,
-              decoration: const InputDecoration(
-                labelText: 'URL',
-                hintText: '例如：6099/webui?token=***',
-                helperText: '自动添加前缀 http://127.0.0.1: \n若需使用https，请手动输入完整URL',
-                border: OutlineInputBorder(),
-              ),
-              keyboardType: TextInputType.url,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Get.back(), child: const Text('取消')),
-          TextButton(
-            onPressed: () {
-              final title = titleController.text.trim();
-              var url = urlController.text.trim();
-
-              if (title.isEmpty || url.isEmpty) {
-                Get.snackbar(
-                  '输入错误',
-                  '标题和 URL 不能为空',
-                  snackPosition: SnackPosition.BOTTOM,
-                  backgroundColor: Colors.orange,
-                  colorText: Colors.white,
-                );
-                return;
-              }
-
-              // 如果URL不包含协议前缀,自动添加 http://127.0.0.1:
-              if (!url.startsWith('http://') && !url.startsWith('https://')) {
-                url = 'http://127.0.0.1:$url';
-              }
-
-              homeController.addCustomWebView(title, url);
-              Get.back();
-
-              Get.snackbar(
-                '添加成功',
-                '自定义 WebView "$title" 已添加',
-                snackPosition: SnackPosition.BOTTOM,
-                duration: const Duration(seconds: 2),
-              );
-            },
-            child: const Text('添加'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // 显示编辑自定义 WebView 对话框
-  void _showEditWebViewDialog(int index, Map<String, String> webview) {
-    final titleController = TextEditingController(text: webview['title']);
-
-    // 将完整URL转换为简化格式用于编辑
-    String displayUrl = webview['url'] ?? '';
-    if (displayUrl.startsWith('https://127.0.0.1:')) {
-      displayUrl = displayUrl.substring('https://127.0.0.1:'.length);
-    } else if (displayUrl.startsWith('http://127.0.0.1:')) {
-      displayUrl = displayUrl.substring('http://127.0.0.1:'.length);
-    }
-
-    final urlController = TextEditingController(text: displayUrl);
-
-    Get.dialog(
-      AlertDialog(
-        title: const Text('编辑自定义 WebView'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: titleController,
-              decoration: const InputDecoration(
-                labelText: '标题',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: urlController,
-              decoration: const InputDecoration(
-                labelText: 'URL',
-                helperText: '自动添加前缀 http://127.0.0.1: \n若需使用https,请手动输入完整URL',
-                border: OutlineInputBorder(),
-              ),
-              keyboardType: TextInputType.url,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Get.back(), child: const Text('取消')),
-          TextButton(
-            onPressed: () {
-              final title = titleController.text.trim();
-              var url = urlController.text.trim();
-
-              if (title.isEmpty || url.isEmpty) {
-                Get.snackbar(
-                  '输入错误',
-                  '标题和 URL 不能为空',
-                  snackPosition: SnackPosition.BOTTOM,
-                  backgroundColor: Colors.orange,
-                  colorText: Colors.white,
-                );
-                return;
-              }
-
-              // 如果URL不包含协议前缀,自动添加 http://127.0.0.1:
-              if (!url.startsWith('http://') && !url.startsWith('https://')) {
-                url = 'http://127.0.0.1:$url';
-              }
-
-              homeController.updateCustomWebView(index, title, url);
-              Get.back();
-
-              Get.snackbar(
-                '更新成功',
-                '自定义 WebView 已更新',
-                snackPosition: SnackPosition.BOTTOM,
-                duration: const Duration(seconds: 2),
-              );
-            },
-            child: const Text('保存'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // 确认删除自定义 WebView
-  void _confirmDeleteWebView(int index, String title) {
-    Get.dialog(
-      AlertDialog(
-        title: const Text('确认删除'),
-        content: Text('确定要删除自定义 WebView "$title" 吗？'),
-        actions: [
-          TextButton(onPressed: () => Get.back(), child: const Text('取消')),
-          TextButton(
-            onPressed: () {
-              homeController.removeCustomWebView(index);
-              Get.back();
-
-              Get.snackbar(
-                '删除成功',
-                '自定义 WebView "$title" 已删除',
-                snackPosition: SnackPosition.BOTTOM,
-                duration: const Duration(seconds: 2),
-              );
-            },
-            child: const Text('删除', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
-    );
-  }
-
   // 执行备份操作
   Future<bool> _performBackup({bool showLoadingDialog = false}) async {
     try {
@@ -629,12 +467,13 @@ class _SettingsPageState extends State<SettingsPage> {
           '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}';
 
       // 备份文件路径（保存到下载文件夹）
-      final backupDir = Directory('/storage/emulated/0/Download/AstrBot');
+      final backupDir = Directory(_backupDirPath);
       if (!await backupDir.exists()) {
         await backupDir.create(recursive: true);
       }
 
-      final backupFileName = 'AstrBot-backup-$timestamp.tar.gz';
+      final backupFileName =
+          '$_backupFilePrefix$timestamp$_backupFileSuffix';
       final backupPath = '${backupDir.path}/$backupFileName';
 
       // 使用 tar 命令压缩 data 目录
@@ -711,124 +550,169 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  // 显示快速登录QQ对话框
-  void _showQuickLoginDialog() async {
-    final webuiJsonPath = '${scripts.ubuntuPath}/root/napcat/config/webui.json';
-    final webuiJsonFile = File(webuiJsonPath);
-
-    // 检查文件是否存在
-    if (!await webuiJsonFile.exists()) {
+  Future<void> _showRestoreBackupDialog() async {
+    final backupDir = Directory(_backupDirPath);
+    if (!await backupDir.exists()) {
       Get.snackbar(
-        '错误',
-        'webui.json 文件不存在',
+        '没有备份',
+        '未找到泡泡版备份目录：$_backupDirPath',
         snackPosition: SnackPosition.BOTTOM,
-        backgroundColor: Colors.red,
-        colorText: Colors.white,
         duration: const Duration(seconds: 3),
       );
       return;
     }
 
-    // 读取并解析 JSON 文件
-    String currentQQ = '';
-    Map<String, dynamic> jsonData;
-    try {
-      final jsonContent = await webuiJsonFile.readAsString();
-      jsonData = jsonDecode(jsonContent) as Map<String, dynamic>;
+    final backups = await backupDir
+        .list()
+        .where((entity) {
+          final name = entity.uri.pathSegments.last;
+          return entity is File &&
+              name.startsWith(_backupFilePrefix) &&
+              name.endsWith(_backupFileSuffix);
+        })
+        .cast<File>()
+        .toList();
 
-      // 检查是否存在 autoLoginAccount 字段
-      if (!jsonData.containsKey('autoLoginAccount')) {
-        Get.snackbar(
-          '错误',
-          '未找到 autoLoginAccount 字段',
-          snackPosition: SnackPosition.BOTTOM,
-          backgroundColor: Colors.red,
-          colorText: Colors.white,
-          duration: const Duration(seconds: 3),
-        );
-        return;
-      }
+    backups.sort((a, b) {
+      return b.lastModifiedSync().compareTo(a.lastModifiedSync());
+    });
 
-      currentQQ = jsonData['autoLoginAccount']?.toString() ?? '';
-    } catch (e) {
+    if (backups.isEmpty) {
       Get.snackbar(
-        '错误',
-        '读取或解析 webui.json 失败: $e',
+        '没有备份',
+        '$_backupDirPath 下没有泡泡版备份文件',
         snackPosition: SnackPosition.BOTTOM,
-        backgroundColor: Colors.red,
-        colorText: Colors.white,
         duration: const Duration(seconds: 3),
       );
       return;
     }
 
-    // 显示编辑对话框
-    final qqController = TextEditingController(text: currentQQ);
-
-    final result = await Get.dialog<bool>(
+    final selected = await Get.dialog<File>(
       AlertDialog(
-        title: const Text('快速登录 QQ'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: qqController,
-              decoration: const InputDecoration(
-                labelText: 'QQ号',
-                hintText: '请输入QQ号',
-                border: OutlineInputBorder(),
-              ),
-              keyboardType: TextInputType.number,
-            ),
-          ],
+        title: const Text('选择备份还原'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView.separated(
+            shrinkWrap: true,
+            itemCount: backups.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (context, index) {
+              final file = backups[index];
+              final stat = file.statSync();
+              final sizeMb = (stat.size / 1024 / 1024).toStringAsFixed(2);
+              return ListTile(
+                title: Text(file.uri.pathSegments.last),
+                subtitle: Text('${stat.modified}\n$sizeMb MB'),
+                isThreeLine: true,
+                onTap: () => Get.back(result: file),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Get.back(),
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    );
+
+    if (selected == null) return;
+
+    final confirmed = await Get.dialog<bool>(
+      AlertDialog(
+        title: const Text('确认还原'),
+        content: Text(
+          '将使用以下备份覆盖当前 AstrBot 数据：\n\n'
+          '${selected.uri.pathSegments.last}\n\n'
+          '还原前会尝试停止 AstrBot，还原成功后应用会退出，请重新打开。',
         ),
         actions: [
           TextButton(
             onPressed: () => Get.back(result: false),
             child: const Text('取消'),
           ),
-          TextButton(
+          FilledButton(
             onPressed: () => Get.back(result: true),
-            child: const Text('保存'),
+            child: const Text('确认还原'),
           ),
         ],
       ),
     );
 
-    // 如果用户点击了保存
-    if (result == true) {
-      final newQQ = qqController.text.trim();
-
-      try {
-        // 更新 JSON 数据
-        jsonData['autoLoginAccount'] = newQQ;
-
-        // 写回文件
-        await webuiJsonFile.writeAsString(
-          const JsonEncoder.withIndent('    ').convert(jsonData),
-        );
-
-        Get.snackbar(
-          '保存成功',
-          'QQ号已更新为: $newQQ',
-          snackPosition: SnackPosition.BOTTOM,
-          duration: const Duration(seconds: 2),
-        );
-        Log.i('自动登录QQ号已更新: $newQQ', tag: 'AstrBot');
-      } catch (e) {
-        Get.snackbar(
-          '保存失败',
-          '写入 webui.json 失败: $e',
-          snackPosition: SnackPosition.BOTTOM,
-          backgroundColor: Colors.red,
-          colorText: Colors.white,
-          duration: const Duration(seconds: 3),
-        );
-        Log.e('保存自动登录QQ号失败: $e', tag: 'AstrBot');
-      }
+    if (confirmed == true) {
+      await _performRestore(selected);
     }
+  }
 
-    qqController.dispose();
+  Future<void> _performRestore(File backupFile) async {
+    Get.dialog(
+      const Center(child: CircularProgressIndicator()),
+      barrierDismissible: false,
+    );
+
+    try {
+      if (Get.isRegistered<HomeController>()) {
+        await Get.find<HomeController>().stopAstrBot();
+      }
+
+      final astrBotDir = Directory('${scripts.ubuntuPath}/root/AstrBot');
+      final dataDir = Directory('${astrBotDir.path}/data');
+      final tempDataDir = Directory(
+        '${astrBotDir.path}/data_restore_old_${DateTime.now().millisecondsSinceEpoch}',
+      );
+
+      if (!await astrBotDir.exists()) {
+        await astrBotDir.create(recursive: true);
+      }
+
+      if (await dataDir.exists()) {
+        await dataDir.rename(tempDataDir.path);
+      }
+
+      final result = await Process.run('${RuntimeEnvir.binPath}/busybox', [
+        'tar',
+        '-xzf',
+        backupFile.path,
+        '-C',
+        astrBotDir.path,
+      ]);
+
+      if (result.exitCode != 0) {
+        if (await dataDir.exists()) {
+          await dataDir.delete(recursive: true);
+        }
+        if (await tempDataDir.exists()) {
+          await tempDataDir.rename(dataDir.path);
+        }
+        throw Exception(result.stderr.toString());
+      }
+
+      if (await tempDataDir.exists()) {
+        await tempDataDir.delete(recursive: true);
+      }
+
+      Get.back();
+      Get.snackbar(
+        '还原成功',
+        'AstrBot 数据已还原，应用即将退出',
+        snackPosition: SnackPosition.BOTTOM,
+        duration: const Duration(seconds: 2),
+      );
+      await Future.delayed(const Duration(seconds: 2));
+      exit(0);
+    } catch (e) {
+      Get.back();
+      Get.snackbar(
+        '还原失败',
+        e.toString(),
+        snackPosition: SnackPosition.BOTTOM,
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+        duration: const Duration(seconds: 4),
+      );
+    }
   }
 
   // 显示自定义 Git Clone 对话框
@@ -949,17 +833,19 @@ class _SettingsPageState extends State<SettingsPage> {
       }
     }
 
-    commandController.dispose();
+    _disposeTextControllersSafely([commandController]);
   }
 
   // 打开文件管理器并导航到 AstrBot Ubuntu 文件系统位置
   Future<void> _openFileManager() async {
     try {
       // 使用 DocumentsProvider 的 content URI 打开文件管理器
-      // authority: com.astrbot.astrbot_android.documents
+      // authority: 当前应用包名.documents
       // rootId: ubuntu_root
+      final packageName =
+          RuntimeEnvir.packageName ?? 'com.astrbot.astrbot_bubble';
       final contentUri = Uri.parse(
-        'content://com.astrbot.astrbot_android.documents/root/ubuntu_root',
+        'content://$packageName.documents/root/ubuntu_root',
       );
 
       if (await canLaunchUrl(contentUri)) {
@@ -1071,27 +957,6 @@ class _SettingsPageState extends State<SettingsPage> {
             _appVersion.isEmpty ? '加载中...' : '$_appVersion（点击检查更新）',
           ),
           onTap: () => _checkForUpdates(),
-        ),
-        ListTile(
-          leading: const Icon(Icons.home),
-          title: const Text('回到 AstrBot 主页'),
-          subtitle: const Text('重置并刷新 AstrBot 页面'),
-          onTap: () {
-            // 重置 AstrBot WebView URL 并刷新
-            widget.astrBotController.loadRequest(
-              Uri.parse('http://127.0.0.1:6185'),
-            );
-
-            // 跳转到 AstrBot 标签页（索引 0）
-            widget.onNavigate(0);
-
-            Get.snackbar(
-              '已跳转',
-              'AstrBot 页面已重置并刷新',
-              snackPosition: SnackPosition.BOTTOM,
-              duration: const Duration(seconds: 2),
-            );
-          },
         ),
         ListTile(
           leading: const Icon(Icons.restart_alt),
@@ -1342,6 +1207,12 @@ class _SettingsPageState extends State<SettingsPage> {
           },
         ),
         ListTile(
+          leading: const Icon(Icons.restore),
+          title: const Text('还原 AstrBot 数据'),
+          subtitle: const Text('从 Download/AstrBotBubble 选择备份还原'),
+          onTap: _showRestoreBackupDialog,
+        ),
+        ListTile(
           leading: const Icon(Icons.delete),
           title: const Text('清除 AstrBot 数据'),
           subtitle: const Text('清除 AstrBot 配置和数据，\n重启时自动从备份恢复或重新初始化'),
@@ -1478,82 +1349,6 @@ class _SettingsPageState extends State<SettingsPage> {
             }
           },
         ),
-        ListTile(
-          leading: const Icon(Icons.login),
-          title: const Text('快速登录 QQ'),
-          subtitle: const Text('配置自动登录的QQ账号'),
-          onTap: () => _showQuickLoginDialog(),
-        ),
-        const Divider(height: 1),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-          child: Row(
-            children: [
-              const Text(
-                '自定义 WebView',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.grey,
-                ),
-              ),
-              const Spacer(),
-              IconButton(
-                icon: const Icon(Icons.add_circle_outline, color: Colors.blue),
-                onPressed: _showAddWebViewDialog,
-                tooltip: '添加自定义 WebView',
-              ),
-            ],
-          ),
-        ),
-        Obx(() {
-          final customWebViews = homeController.customWebViews;
-          if (customWebViews.isEmpty) {
-            return const Padding(
-              padding: EdgeInsets.all(16.0),
-              child: Center(
-                child: Text(
-                  '访问插件的 WebUI 面板\n点击右上角"+"添加',
-                  style: TextStyle(color: Colors.grey),
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            );
-          }
-          return Column(
-            children: List.generate(customWebViews.length, (index) {
-              final webview = customWebViews[index];
-              return ListTile(
-                leading: const Icon(Icons.language),
-                title: Text(webview['title'] ?? 'WebUI'),
-                subtitle: Text(webview['url'] ?? ''),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.edit, size: 20),
-                      onPressed: () => _showEditWebViewDialog(index, webview),
-                      tooltip: '编辑',
-                    ),
-                    IconButton(
-                      icon: const Icon(
-                        Icons.delete,
-                        size: 20,
-                        color: Colors.red,
-                      ),
-                      onPressed: () => _confirmDeleteWebView(
-                        index,
-                        webview['title'] ?? 'WebUI',
-                      ),
-                      tooltip: '删除',
-                    ),
-                  ],
-                ),
-              );
-            }),
-          );
-        }),
-        const Divider(),
         const Padding(
           padding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
           child: Text(
@@ -1575,68 +1370,10 @@ class _SettingsPageState extends State<SettingsPage> {
           onTap: () => _requestBatteryOptimization(),
         ),
         ListTile(
-          leading: const Icon(Icons.web),
-          title: const Text('NapCat WebUI'),
-          subtitle: const Text('显示或隐藏 NapCat 网页控制面板（默认隐藏）'),
-          trailing: Switch(
-            value: homeController.napCatWebUiEnabled.get() ?? false,
-            onChanged: (bool value) {
-              // 使用新的方法来同步更新响应式变量
-              homeController.setNapCatWebUiEnabled(value);
-
-              Get.snackbar(
-                value ? 'WebUI 已启用' : 'WebUI 已禁用',
-                value ? 'NapCat 标签页已显示，可以立即访问控制面板' : 'NapCat 标签页已隐藏',
-                snackPosition: SnackPosition.BOTTOM,
-                duration: const Duration(seconds: 2),
-              );
-            },
-          ),
-        ),
-        Obx(() {
-          final token = homeController.napCatWebUiToken.value;
-          return ListTile(
-            leading: const Icon(Icons.vpn_key),
-            title: const Text('NapCat 登录 token'),
-            subtitle: Text(token.isEmpty ? '暂未获取到token' : token),
-            onTap: token.isEmpty
-                ? null
-                : () async {
-                    final fullUrl = 'http://localhost:6099/webui?token=$token';
-                    await Clipboard.setData(ClipboardData(text: fullUrl));
-                    Get.snackbar(
-                      '已复制',
-                      '完整登录链接已复制到剪贴板',
-                      snackPosition: SnackPosition.BOTTOM,
-                      duration: const Duration(seconds: 2),
-                    );
-                  },
-          );
-        }),
-        ListTile(
           leading: const Icon(Icons.code),
           title: const Text('自定义 Git Clone 命令'),
           subtitle: const Text('自定义 AstrBot 的获取方式'),
           onTap: () => _showCustomGitCloneDialog(),
-        ),
-        ListTile(
-          leading: const Icon(Icons.text_fields),
-          title: const Text('显示终端白色文本日志'),
-          subtitle: const Text('是否在终端显示 AstrBot 白色文本日志（默认隐藏）'),
-          trailing: Obx(() => Switch(
-                value: homeController.showTerminalWhiteTextRx.value,
-                onChanged: (bool value) {
-                  // 使用新的方法来同步更新响应式变量
-                  homeController.setShowTerminalWhiteText(value);
-
-                  Get.snackbar(
-                    value ? '已启用白色文本显示' : '已禁用白色文本显示',
-                    value ? '终端将显示所有日志输出' : '终端将仅显示彩色日志输出',
-                    snackPosition: SnackPosition.BOTTOM,
-                    duration: const Duration(seconds: 2),
-                  );
-                },
-              )),
         ),
         ListTile(
           leading: const Icon(Icons.folder),
@@ -1648,8 +1385,8 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
         ListTile(
           leading: const Icon(Icons.delete_outline),
-          title: const Text('清空 WebView 缓存'),
-          subtitle: const Text('清理所有 WebView 缓存和密码'),
+          title: const Text('清空本应用 WebView 缓存'),
+          subtitle: const Text('只清理泡泡版 WebView 缓存和本应用保存的密码'),
           onTap: () async {
             try {
               await widget.astrBotController.clearCache();

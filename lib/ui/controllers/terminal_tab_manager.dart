@@ -14,12 +14,15 @@ enum TerminalTabType {
 
 /// 终端标签页数据模型
 class TerminalTab {
+  static const int _maxLogChars = 120000;
+
   final String id;
   final String title;
   final TerminalTabType type;
   final Terminal terminal;
   final Pty? pty;
   bool isActive;
+  String _logText = '';
 
   TerminalTab({
     required this.id,
@@ -29,6 +32,19 @@ class TerminalTab {
     this.pty,
     this.isActive = false,
   });
+
+  String get logText => _logText;
+
+  void appendLog(String text) {
+    if (text.isEmpty) return;
+    _logText += text
+        .replaceAll(RegExp(r'\x1B\[[0-9;?]*[ -/]*[@-~]'), '')
+        .replaceAll('\r\n', '\n')
+        .replaceAll('\r', '\n');
+    if (_logText.length > _maxLogChars) {
+      _logText = _logText.substring(_logText.length - _maxLogChars);
+    }
+  }
 }
 
 /// 多终端标签页管理器
@@ -47,7 +63,7 @@ class TerminalTabManager extends GetxController {
     // 添加固定的AstrBot终端标签页
     final fixedTab = TerminalTab(
       id: 'fixed_astrbot',
-      title: 'AstrBot',
+      title: 'main',
       type: TerminalTabType.fixed,
       terminal: terminal,
       pty: null, // 固定终端使用外部管理的 pseudoTerminal
@@ -78,6 +94,7 @@ class TerminalTabManager extends GetxController {
 
       // 标志：是否已经创建了标签页
       var tabCreated = false;
+      TerminalTab? createdTab;
 
       // 连接终端的 onResize 和 onOutput 事件（需要在监听输出前就连接好）
       newTerminal.onResize = (width, height, pixelWidth, pixelHeight) {
@@ -106,6 +123,7 @@ class TerminalTabManager extends GetxController {
             pty: newPty,
             isActive: false,
           );
+          createdTab = newTab;
 
           // 将所有现有标签页设为非激活状态
           for (var tab in tabs) {
@@ -124,6 +142,7 @@ class TerminalTabManager extends GetxController {
 
         // 标签页创建后，正常输出所有内容
         if (tabCreated) {
+          createdTab?.appendLog(event);
           newTerminal.write(event);
         }
         // 标签页创建前，不输出任何内容（跳过登录过程的输出）
@@ -137,6 +156,69 @@ class TerminalTabManager extends GetxController {
       Log.e('添加系统终端标签页失败: $e', tag: 'TerminalTabManager');
       Get.snackbar('错误', '创建终端失败: $e');
     }
+  }
+
+  Future<void> addCommandTerminalTab({
+    required String title,
+    required String command,
+    String? onDoneMarker,
+    void Function()? onCommandDone,
+  }) async {
+    try {
+      final tabId = 'command_${DateTime.now().millisecondsSinceEpoch}';
+      final newTerminal = Terminal(maxLines: 10000);
+      final newPty = createPTY(
+        rows: newTerminal.viewHeight,
+        columns: newTerminal.viewWidth,
+      );
+
+      newTerminal.onResize = (width, height, pixelWidth, pixelHeight) {
+        newPty.resize(height, width);
+      };
+      newTerminal.onOutput = (data) {
+        newPty.writeString(data);
+      };
+
+      final newTab = TerminalTab(
+        id: tabId,
+        title: title,
+        type: TerminalTabType.system,
+        terminal: newTerminal,
+        pty: newPty,
+        isActive: true,
+      );
+
+      for (var tab in tabs) {
+        tab.isActive = false;
+      }
+      tabs.add(newTab);
+      activeTabIndex.value = tabs.length - 1;
+
+      var doneNotified = false;
+      newPty.output
+          .cast<List<int>>()
+          .transform(const Utf8Decoder(allowMalformed: true))
+          .listen((event) {
+        newTab.appendLog(event);
+        newTerminal.write(event);
+        if (!doneNotified &&
+            onDoneMarker != null &&
+            _containsDoneMarker(event, onDoneMarker)) {
+          doneNotified = true;
+          onCommandDone?.call();
+        }
+      });
+
+      newPty.writeString(command);
+    } catch (e) {
+      Log.e('添加命令终端标签页失败: $e', tag: 'TerminalTabManager');
+      Get.snackbar('错误', '创建命令终端失败: $e');
+    }
+  }
+
+  bool _containsDoneMarker(String event, String marker) {
+    final normalized = event.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+    return normalized.split('\n').any((line) => line.trim() == marker);
   }
 
   /// 切换到指定标签页
