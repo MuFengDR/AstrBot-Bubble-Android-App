@@ -1,6 +1,7 @@
 import 'package:global_repository/global_repository.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../config/app_config.dart';
+import '../config/service_ports.dart';
 import '../../generated/l10n.dart';
 
 // 获取应用版本号（从 pubspec.yaml）
@@ -118,22 +119,33 @@ install_ubuntu(){
     echo "[state] TAR_ARGS=$TAR_ARGS"
     progress_echo "Ubuntu $L_NOT_INSTALLED, $L_INSTALLING..."
 
-    echo "[cmd] busybox tar $TAR_ARGS ~/$UBUNTU -C $UBUNTU_PATH/"
-    if busybox tar $TAR_ARGS ~/$UBUNTU -C $UBUNTU_PATH/ | while read line; do
-      # echo -ne "\033[2K\0337\r$line\0338"
-      echo -ne "\033[2K\r$line"
-    done; then
+    UBUNTU_ARCHIVE="$HOME_PATH/$UBUNTU"
+    if [ ! -f "$UBUNTU_ARCHIVE" ]; then
+      echo "[error] Ubuntu archive not found: $UBUNTU_ARCHIVE"
+      return 1
+    fi
+
+    EXTRACT_LOG="$TMPDIR/ubuntu_extract.log"
+    echo "[cmd] busybox tar $TAR_ARGS $UBUNTU_ARCHIVE -C $UBUNTU_PATH/"
+    if busybox tar $TAR_ARGS "$UBUNTU_ARCHIVE" -C "$UBUNTU_PATH/" > "$EXTRACT_LOG" 2>&1; then
+      while read line; do
+        echo -ne "\033[2K\r$line"
+      done < "$EXTRACT_LOG"
       echo
       echo "[result] tar success, moving $UBUNTU_NAME contents"
     else
+      status=$?
+      cat "$EXTRACT_LOG" 2>/dev/null || true
       echo
-      echo "[result] tar failed with exit code $?"
+      echo "[result] tar failed with exit code $status"
+      return $status
     fi
     if [ -d "$UBUNTU_PATH/$UBUNTU_NAME" ]; then
       mv "$UBUNTU_PATH/$UBUNTU_NAME/"* "$UBUNTU_PATH/"
       rm -rf "$UBUNTU_PATH/$UBUNTU_NAME"
     else
-      echo "[warn] expected directory $UBUNTU_PATH/$UBUNTU_NAME not found after extraction"
+      echo "[error] expected directory $UBUNTU_PATH/$UBUNTU_NAME not found after extraction"
+      return 1
     fi
     # 注释掉 code-server 相关的 PATH 设置
     # echo 'export PATH=/opt/code-server-$CSVERSION-linux-arm64/bin:$PATH' >> $UBUNTU_PATH/root/.bashrc
@@ -504,6 +516,17 @@ String getCopyFilesScript(String currentVersion) {
 copy_files(){
   mkdir -p "\$UBUNTU_PATH/root"
 
+  OLD_GIT_CLONE_LINE=\$(grep '^CUSTOM_GIT_CLONE=' "\$UBUNTU_PATH/root/astrbot-startup.sh" 2>/dev/null)
+  cp ~/astrbot-startup.sh "\$UBUNTU_PATH/root/astrbot-startup.sh"
+  if [ -n "\$OLD_GIT_CLONE_LINE" ] && ! echo "\$OLD_GIT_CLONE_LINE" | grep -q '=""\$'; then
+    sed -i "s|^CUSTOM_GIT_CLONE=.*|\$OLD_GIT_CLONE_LINE|" "\$UBUNTU_PATH/root/astrbot-startup.sh"
+    echo "startup script refreshed, custom git clone preserved"
+  else
+    echo "startup script refreshed"
+  fi
+  cp ~/cmd_config.json "\$UBUNTU_PATH/root/cmd_config.json"
+  return 0
+
   # 当前版本号（从 pubspec.yaml 通过 PackageInfo 获取）
   CURRENT_VERSION="$currentVersion"
 
@@ -559,13 +582,7 @@ $loginUbuntu
 ${getCopyFilesScript(currentVersion)}
 clear_lines
 start_astrbot(){
-  bump_progress
-  install_ubuntu
-  sleep 1
-  bump_progress
-
-  copy_files
-  login_ubuntu "export TMPDIR='${RuntimeEnvir.tmpPath}'; export L_NOT_INSTALLED='${S.current.uninstalled}'; export L_INSTALLING='${S.current.installing}'; export L_INSTALLED='${S.current.installed}'; chmod +x /root/astrbot-startup.sh; bash /root/astrbot-startup.sh"
+  login_ubuntu "export TMPDIR='${RuntimeEnvir.tmpPath}'; export ASTRBOT_DASHBOARD_PORT='${ServicePorts.dashboardPort}'; if [ ! -x /root/.local/bin/uv ] || [ ! -d /root/AstrBot ] || [ ! -d /root/AstrBot/.venv ]; then echo __ASTRBOT_MANUAL_ENV_REQUIRED__; echo 'AstrBot 环境未安装完整，请到主页环境管理安装。'; exit 1; fi; cd /root/AstrBot; echo 'AstrBot 启动中'; /root/.local/bin/uv run --no-sync main.py"
 }
 ''';
 }

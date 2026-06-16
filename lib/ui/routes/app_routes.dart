@@ -1,12 +1,24 @@
 import 'package:get/get.dart';
+import '../pages/launcher/launcher_page.dart';
+import '../pages/main/main_page.dart';
 import '../pages/terminal/terminal_page.dart';
 import '../pages/webview/webview_page.dart';
 
 class AppRoutes {
+  static const String launcher = '/launcher';
+  static const String main = '/main';
   static const String terminal = '/terminal';
   static const String webview = '/webview';
 
   static final routes = [
+    GetPage(
+      name: main,
+      page: () => const MainPage(),
+    ),
+    GetPage(
+      name: launcher,
+      page: () => const LauncherPage(),
+    ),
     GetPage(
       name: terminal,
       page: () => const TerminalPage(),

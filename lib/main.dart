@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:get/get.dart';
 import 'package:global_repository/global_repository.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:settings/settings.dart';
 import 'dart:async';
 
@@ -14,17 +15,17 @@ import 'ui/routes/app_routes.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   // 检查并请求通知权限
   var status = await Permission.notification.status;
   if (status.isDenied || status.isPermanentlyDenied) {
     await Permission.notification.request();
   }
-  
+
   // 初始化并启动前台服务
   ForegroundServiceManager.init();
   await ForegroundServiceManager.startService();
-  
+
   // 隐藏系统 UI
   // Hide system UI
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: [
@@ -38,10 +39,10 @@ Future<void> main() async {
     systemNavigationBarColor: Colors.transparent,
     systemNavigationBarDividerColor: Colors.transparent,
   ));
-  RuntimeEnvir.initEnvirWithPackageName('com.astrbot.astrbot_android');
+  final packageInfo = await PackageInfo.fromPlatform();
+  RuntimeEnvir.initEnvirWithPackageName(packageInfo.packageName);
   await initSettingStore(RuntimeEnvir.configPath);
   runApp(const AstrBot());
-
 }
 
 class AstrBot extends StatefulWidget {
@@ -66,7 +67,8 @@ class _AstrBotState extends State<AstrBot> with WidgetsBindingObserver {
   /// 启动服务状态监听器
   void _startServiceMonitor() {
     // 每10秒检查一次服务状态
-    _serviceMonitorTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
+    _serviceMonitorTimer =
+        Timer.periodic(const Duration(seconds: 10), (timer) async {
       final isRunning = await ForegroundServiceManager.isRunningService();
       final userClickedStop = ForegroundServiceManager.userClickedStopButton;
 
@@ -94,7 +96,7 @@ class _AstrBotState extends State<AstrBot> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    
+
     // 当应用完全退出时，确保清理所有资源
     if (state == AppLifecycleState.detached) {
       Log.i('应用正在退出，清理所有资源...', tag: 'AstrBot');
@@ -127,7 +129,7 @@ class _AstrBotState extends State<AstrBot> with WidgetsBindingObserver {
       ],
       supportedLocales: S.delegate.supportedLocales,
       // 使用路由管理
-      initialRoute: AppRoutes.terminal,
+      initialRoute: AppRoutes.main,
       getPages: AppRoutes.routes,
     );
   }

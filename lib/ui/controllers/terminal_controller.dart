@@ -9,11 +9,31 @@ import 'package:xterm/xterm.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/config/app_config.dart';
+import '../../core/config/environment_config.dart';
+import '../../core/config/service_ports.dart';
 import '../../generated/l10n.dart';
 import '../../core/constants/scripts.dart';
 import '../../core/utils/file_utils.dart';
 import '../routes/app_routes.dart';
 import 'terminal_tab_manager.dart';
+
+class NapCatInstanceDefaults {
+  static const String storageKey = 'napcat_instances';
+  static const int firstExtraWebUiPort = 6099;
+  static const int lastExtraWebUiPort = 6149;
+  static const int firstExtraDisplay = 22;
+}
+
+const int _napCatQrExpireSeconds = 120;
+
+class _NapCatQrDialogState {
+  final RxInt secondsLeft;
+  Timer? timer;
+  VoidCallback? close;
+  bool closed = false;
+
+  _NapCatQrDialogState({required this.secondsLeft});
+}
 
 class HomeController extends GetxController {
   // 终端标签页管理器
@@ -21,16 +41,26 @@ class HomeController extends GetxController {
   // bool vsCodeStaring = false;
   SettingNode privacySetting = 'privacy'.setting;
   SettingNode napCatWebUiEnabled = 'napcat_webui_enabled'.setting;
-  SettingNode showTerminalWhiteText = 'show_terminal_white_text'.setting;
   Pty? pseudoTerminal;
   Pty? napcatTerminal;
 
   final RxString napCatWebUiToken = ''.obs; // 存储 NapCat WebUI Token
   final RxBool _isQrcodeShowing = false.obs;
   final RxBool napCatWebUiEnabledRx = false.obs; // GetX 响应式变量用于导航栏更新
-  final RxBool showTerminalWhiteTextRx = false.obs; // GetX 响应式变量用于设置页更新
   final RxList<Map<String, String>> customWebViews =
       <Map<String, String>>[].obs; // 自定义 WebView 列表
+  final RxList<Map<String, dynamic>> napCatInstances =
+      <Map<String, dynamic>>[].obs;
+  final RxBool isAstrBotStarting = false.obs;
+  final RxBool isAstrBotRunning = false.obs;
+  final RxBool isAstrBotStopping = false.obs;
+  final Map<String, Pty> _napCatInstanceTerminals = {};
+  final Map<String, StreamSubscription> _napCatInstanceSubscriptions = {};
+  final Set<String> _napCatInstanceQqProbing = {};
+  final Map<String, _NapCatQrDialogState> _napCatQrDialogs = {};
+  final RxList<String> hiddenWebUiTargetIds = <String>[].obs;
+  final RxnString pendingWebUiTargetId = RxnString();
+  final RxnInt pendingMainTabIndex = RxnInt();
   Dialog? _qrcodeDialog;
   StreamSubscription? _qrcodeSubscription;
   StreamSubscription? _webviewSubscription; // 添加webview监听订阅
@@ -45,11 +75,16 @@ class HomeController extends GetxController {
     },
   );
   bool webviewHasOpen = false;
-  bool _isLocalhostDetected = false; // localhost:6185 检测标志
+  bool _isLocalhostDetected = false; // AstrBot dashboard 端口检测标志
   bool _isQrcodeProcessed = false; // 二维码处理完成标志
   bool _isAppInForeground = true; // 应用是否在前台
-  bool _isAstrBotConfiguring = false; // AstrBot 配置中标志，用于控制终端输出过滤
-  String _pendingOutput = ''; // 待处理的输出缓冲
+  bool showStartupProgress = true; // 是否显示启动进度浮层
+  static const int _maxStartupLogChars = 120000;
+  String _startupLogText = '';
+  String _terminalWriteBuffer = '';
+  Timer? _terminalWriteTimer;
+
+  String get startupLogText => _startupLogText;
 
   File progressFile = File('${RuntimeEnvir.tmpPath}/progress');
   File progressDesFile = File('${RuntimeEnvir.tmpPath}/progress_des');
@@ -77,180 +112,90 @@ class HomeController extends GetxController {
     update();
   }
 
-  // 使用 login_ubuntu 函数，传入要执行的命令
-  // Use login_ubuntu function, passing the command to execute
-  String get command {
-    return 'source ${RuntimeEnvir.homePath}/common.sh\nlogin_ubuntu "bash /root/launcher.sh"\n';
+  String _cleanTerminalLog(String text) {
+    return text
+        .replaceAll(RegExp(r'\x1B\[[0-9;?]*[ -/]*[@-~]'), '')
+        .replaceAll('\r\n', '\n')
+        .replaceAll('\r', '\n');
   }
 
-  // 检测文本是否包含彩色 ANSI 代码(非白色/默认色)
-  // Check if text contains colored ANSI codes (non-white/default)
-  bool _hasColoredAnsiCode(String text) {
-    // ANSI 彩色代码正则: \x1b[...m 或 \033[...m
-    // 匹配所有颜色代码，排除白色(37)和重置代码(0)
-    final ansiColorRegex = RegExp(
-      r'\x1b\[([0-9;]+)m|\033\[([0-9;]+)m',
-      multiLine: true,
-    );
-
-    final matches = ansiColorRegex.allMatches(text);
-    for (var match in matches) {
-      final code = match.group(1) ?? match.group(2) ?? '';
-      // 检查是否包含颜色代码
-      // 30-37: 前景色, 40-47: 背景色, 90-97: 高亮前景色, 100-107: 高亮背景色
-      // 排除: 0(重置), 37(白色), 97(高亮白色)
-      final codes = code.split(';');
-      for (var c in codes) {
-        final colorCode = int.tryParse(c.trim());
-        if (colorCode != null) {
-          // 有效的颜色代码(非白色且非重置)
-          if ((colorCode >= 30 && colorCode <= 36) || // 前景色(黑到青)
-              (colorCode >= 40 && colorCode <= 47) || // 背景色
-              (colorCode >= 90 && colorCode <= 96) || // 高亮前景色(非白)
-              (colorCode >= 100 && colorCode <= 107)) {
-            // 高亮背景色
-            return true;
-          }
-        }
-      }
-    }
-    return false;
-  }
-
-  // 检测文本是否为纯彩色输出(不含白色文本)
-  // Check if text is purely colored output (no white/default text)
-  bool _isPurelyColoredOutput(String text) {
-    // 移除所有 ANSI 代码后，检查是否还有可见文本
-    final ansiRegex = RegExp(r'\x1b\[[0-9;]*m|\033\[[0-9;]*m');
-    final cleanText = text.replaceAll(ansiRegex, '').trim();
-
-    // 如果移除 ANSI 代码后没有可见文本，说明是纯 ANSI 控制序列
-    if (cleanText.isEmpty) {
-      return _hasColoredAnsiCode(text);
-    }
-
-    // 如果有可见文本但没有任何彩色代码，说明是纯白色文本
-    if (!_hasColoredAnsiCode(text)) {
-      return false;
-    }
-
-    // 关键判断：检查文本中是否所有可见内容都被彩色 ANSI 代码包裹
-    // 策略：分段检查每个 ANSI 颜色代码后面的文本，直到遇到重置代码或下一个颜色代码
-    final ansiColorRegex = RegExp(
-      r'\x1b\[([0-9;]+)m|\033\[([0-9;]+)m',
-      multiLine: true,
-    );
-
-    int lastIndex = 0;
-    bool inColoredSection = false;
-    bool hasUncoloredText = false;
-
-    final matches = ansiColorRegex.allMatches(text).toList();
-
-    for (int i = 0; i < matches.length; i++) {
-      final match = matches[i];
-
-      // 检查当前 ANSI 代码之前的文本
-      if (match.start > lastIndex) {
-        final textBefore = text.substring(lastIndex, match.start).trim();
-        // 如果之前有文本且不在彩色段中，说明有未着色的白色文本
-        if (textBefore.isNotEmpty && !inColoredSection) {
-          hasUncoloredText = true;
-          break;
-        }
-      }
-
-      final code = match.group(1) ?? match.group(2) ?? '';
-      final codes = code.split(';');
-
-      // 检查这个 ANSI 代码是否是颜色代码(非白色)
-      bool isColorCode = false;
-      bool isResetCode = false;
-
-      for (var c in codes) {
-        final colorCode = int.tryParse(c.trim());
-        if (colorCode != null) {
-          if (colorCode == 0) {
-            isResetCode = true;
-          } else if ((colorCode >= 30 && colorCode <= 36) ||
-              (colorCode >= 40 && colorCode <= 47) ||
-              (colorCode >= 90 && colorCode <= 96) ||
-              (colorCode >= 100 && colorCode <= 107)) {
-            isColorCode = true;
-          }
-        }
-      }
-
-      if (isColorCode) {
-        inColoredSection = true;
-      } else if (isResetCode) {
-        inColoredSection = false;
-      }
-
-      lastIndex = match.end;
-    }
-
-    // 检查最后一个 ANSI 代码之后的文本
-    if (lastIndex < text.length) {
-      final textAfter = text.substring(lastIndex).trim();
-      if (textAfter.isNotEmpty && !inColoredSection) {
-        hasUncoloredText = true;
-      }
-    }
-
-    // 如果存在未着色的文本，说明不是纯彩色输出
-    return !hasUncoloredText;
-  }
-
-  // 检测文本是否包含 ANSI 重置代码
-  // Check if text contains ANSI reset code
-  bool _hasResetCode(String text) {
-    // 匹配重置代码: \x1b[0m 或 \033[0m
-    final resetRegex = RegExp(r'\x1b\[0m|\033\[0m');
-    return resetRegex.hasMatch(text);
-  }
-
-  // 处理彩色输出过滤逻辑
-  // Handle colored output filtering logic
-  void _processColoredOutput(String event) {
-    _pendingOutput += event;
-
-    // 检查设置：如果允许显示白色文本，则显示所有内容
-    if (showTerminalWhiteText.get() == true) {
-      terminal.write(event);
-      return;
-    }
-
-    // 检查是否包含彩色代码和重置代码
-    final isPurelyColored = _isPurelyColoredOutput(_pendingOutput);
-    final hasReset = _hasResetCode(_pendingOutput);
-
-    // 检查是否有完整的行(以换行符结尾)或者包含重置代码
-    if (_pendingOutput.endsWith('\n') ||
-        _pendingOutput.endsWith('\r\n') ||
-        hasReset) {
-      // 只有当输出是纯彩色的（不包含白色文本）时才输出
-      if (isPurelyColored) {
-        terminal.write(_pendingOutput);
-      }
-      // 清空缓冲
-      _pendingOutput = '';
+  void _recordStartupLog(String text) {
+    if (text.isEmpty) return;
+    _startupLogText += _cleanTerminalLog(text);
+    if (_startupLogText.length > _maxStartupLogChars) {
+      _startupLogText = _startupLogText
+          .substring(_startupLogText.length - _maxStartupLogChars);
     }
   }
 
-  // 检查两个条件是否都满足，如果满足则触发跳转
+  void _writeTerminal(String text) {
+    _recordStartupLog(text);
+    _terminalWriteBuffer += text;
+    if (_terminalWriteBuffer.length > 20000) {
+      _terminalWriteBuffer =
+          _terminalWriteBuffer.substring(_terminalWriteBuffer.length - 20000);
+    }
+    _terminalWriteTimer ??= Timer(const Duration(milliseconds: 50), () {
+      final buffered = _terminalWriteBuffer;
+      _terminalWriteBuffer = '';
+      _terminalWriteTimer = null;
+      if (buffered.isNotEmpty) {
+        terminal.write(buffered);
+      }
+    });
+  }
+
+  void _writeInstanceOutput(String instanceName, String text) {
+    if (text.length > 4000) {
+      text = '${text.substring(text.length - 4000)}\r\n';
+    }
+    final normalized = text.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+    final lines = normalized.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      final line = lines[i];
+      if (line.isEmpty && i == lines.length - 1) continue;
+      _writeTerminal('[$instanceName] $line\r\n');
+    }
+  }
+
+  void _requestMainTab(int index) {
+    pendingMainTabIndex.value = index;
+  }
+
+  void clearPendingMainTabIndex(int index) {
+    if (pendingMainTabIndex.value == index) {
+      pendingMainTabIndex.value = null;
+    }
+  }
+
+  // 检查两个条件是否都满足，如果满足则切到新版主界面的 WebUI 页。
   void _checkAndNavigateToWebview() {
-    // 只有当两个条件都满足且应用在前台时才跳转
     if (_isLocalhostDetected &&
         _isQrcodeProcessed &&
         _isAppInForeground &&
         !webviewHasOpen) {
       Future.microtask(() {
-        // 使用路由跳转
-        Get.toNamed(AppRoutes.webview);
-        webviewHasOpen = true; // 只有真正打开webview时才设置为true
+        requestOpenAstrBotWebUi();
+        _requestMainTab(1);
+        webviewHasOpen = true;
       });
     }
+  }
+
+  void _markStartupReady({bool qrcodeProcessed = false}) {
+    if (qrcodeProcessed) {
+      _isQrcodeProcessed = true;
+    }
+    isAstrBotStarting.value = false;
+    isAstrBotRunning.value = true;
+    showStartupProgress = false;
+    update();
+    _checkAndNavigateToWebview();
+  }
+
+  void revealStartupLog() {
+    showStartupProgress = false;
+    update();
   }
 
   // 监听输出，当输出中包含启动成功的标志时，启动 VewView 和导航栏页面
@@ -261,6 +206,7 @@ class HomeController extends GetxController {
         .cast<List<int>>()
         .transform(const Utf8Decoder(allowMalformed: true))
         .listen((event) async {
+      _recordStartupLog(event);
       // 输出到 Flutter 控制台
       // Output to Flutter console
       if (event.trim().isNotEmpty) {
@@ -273,13 +219,26 @@ class HomeController extends GetxController {
         }
       }
 
-      // 检查是否包含 localhost:6185
-      if (event.contains('http://localhost:6185')) {
+      // 检查是否包含当前配置的 AstrBot dashboard 端口
+      if (event.contains('__ASTRBOT_MANUAL_ENV_REQUIRED__')) {
+        _writeTerminal(
+          '\r\n[环境] 运行环境还没安装完整，请进入 主页 -> 环境管理 分步安装。\r\n',
+        );
+        _openHomeForManualEnvironment();
+        return;
+      }
+
+      if (_containsDashboardUrl(event)) {
         _isLocalhostDetected = true;
         bumpProgress();
 
-        // 检查是否两个条件都满足
-        _checkAndNavigateToWebview();
+        // AstrBot 控制台端口已经可用。若当前没有二维码弹窗，说明无需等待扫码
+        // 流程（常见于已登录/已初始化场景），可以直接进入 WebView。
+        if (!_isQrcodeShowing.value) {
+          _markStartupReady(qrcodeProcessed: true);
+        } else {
+          _checkAndNavigateToWebview();
+        }
 
         Future.delayed(const Duration(milliseconds: 2000), () {
           update();
@@ -288,16 +247,44 @@ class HomeController extends GetxController {
         // 不取消订阅，继续监听以便终端日志持续更新
       }
 
-      // 只在 AstrBot 配置阶段才过滤非彩色输出
-      // Only filter non-colored output after AstrBot configuration starts
-      if (_isAstrBotConfiguring) {
-        // 使用新的彩色输出处理逻辑,支持多行彩色输出
-        _processColoredOutput(event);
-      } else {
-        // 配置前显示所有输出
-        terminal.write(event);
-      }
+      terminal.write(event);
+    }, onDone: () {
+      isAstrBotStarting.value = false;
+      isAstrBotRunning.value = false;
+      showStartupProgress = false;
+      update();
+    }, onError: (error) {
+      isAstrBotStarting.value = false;
+      isAstrBotRunning.value = false;
+      showStartupProgress = false;
+      _writeTerminal('\r\n[AstrBot] 进程输出异常: $error\r\n');
+      update();
     });
+  }
+
+  bool _containsDashboardUrl(String event) {
+    final port = ServicePorts.dashboardPort;
+    return event.contains('http://localhost:$port') ||
+        event.contains('http://127.0.0.1:$port') ||
+        event.contains('http://0.0.0.0:$port');
+  }
+
+  void _openHomeForManualEnvironment() {
+    isAstrBotStarting.value = false;
+    isAstrBotRunning.value = false;
+    showStartupProgress = false;
+    _isLocalhostDetected = true;
+    _isQrcodeProcessed = true;
+    update();
+
+    if (_isAppInForeground && !webviewHasOpen) {
+      Future.microtask(() {
+        Get.toNamed(
+          AppRoutes.main,
+        );
+        webviewHasOpen = true;
+      });
+    }
   }
 
   void initQrcodeListener() {
@@ -307,12 +294,15 @@ class HomeController extends GetxController {
         .cast<List<int>>()
         .transform(const Utf8Decoder(allowMalformed: true))
         .listen((event) async {
+      _recordStartupLog(event);
       // 先判断订阅是否已取消，避免重复处理
       if (_qrcodeSubscription == null) return;
 
       // 输出到 Flutter 控制台
       // Output to Flutter console
       if (event.trim().isNotEmpty) {
+        terminal.write(event);
+
         // 按行分割输出，避免控制台输出混乱
         final lines = event.split('\n');
         for (var line in lines) {
@@ -391,10 +381,7 @@ class HomeController extends GetxController {
         }
 
         // 标记二维码处理完成
-        _isQrcodeProcessed = true;
-
-        // 检查是否两个条件都满足
-        _checkAndNavigateToWebview();
+        _markStartupReady(qrcodeProcessed: true);
 
         // 取消订阅，后续不再监听任何指令
         await _qrcodeSubscription?.cancel();
@@ -502,22 +489,6 @@ class HomeController extends GetxController {
         String content = await progressDesFile.readAsString();
         currentProgress = content;
 
-        // 当进度到达 "Napcat 已安装" 时，启动 NapCat 终端
-        if (content.contains('Napcat ${S.current.installed}')) {
-          napcatTerminal?.writeString('$command\n');
-          bumpProgress();
-          Log.i('检测到 Napcat 已安装，启动 NapCat 终端', tag: 'AstrBot');
-        }
-
-        // 当进度到达 "AstrBot 配置中" 时，开始过滤非彩色输出并清除终端
-        if (content.trim() == 'AstrBot 配置中') {
-          _isAstrBotConfiguring = true;
-          // 清除终端先前显示的所有文本
-          terminal.buffer.clear();
-          terminal.buffer.setCursor(0, 0);
-          Log.i('检测到 AstrBot 配置中，清除终端内容并开始过滤非彩色终端输出', tag: 'AstrBot');
-        }
-
         update();
       }
     });
@@ -583,58 +554,202 @@ class HomeController extends GetxController {
   }
 
   Future<void> loadAstrBot() async {
-    syncProgress();
+    if (isAstrBotStarting.value || isAstrBotRunning.value) return;
+    isAstrBotStarting.value = true;
+    isAstrBotRunning.value = false;
+    showStartupProgress = true;
+    _isLocalhostDetected = false;
+    _isQrcodeProcessed = false;
+    webviewHasOpen = false;
+    _startupLogText = '';
+    _webviewSubscription?.cancel();
+    _qrcodeSubscription?.cancel();
+    update();
 
-    // 创建相关文件夹
+    try {
+      syncProgress();
+
+      // 创建相关文件夹
+      Directory(RuntimeEnvir.tmpPath).createSync(recursive: true);
+      Directory(RuntimeEnvir.homePath).createSync(recursive: true);
+      Directory(RuntimeEnvir.binPath).createSync(recursive: true);
+
+      await initEnvir();
+      createBusyboxLink();
+
+      // 创建终端
+      pseudoTerminal =
+          createPTY(rows: terminal.viewHeight, columns: terminal.viewWidth);
+      napcatTerminal = null;
+
+      setProgress('准备启动 AstrBot...');
+      bumpProgress();
+
+      // 获取当前应用版本号
+      final appVersion = await getAppVersion();
+
+      // 写入 common.sh 脚本
+      File('${RuntimeEnvir.homePath}/common.sh').writeAsStringSync(
+        _toUnixLineEndings(getCommonScript(appVersion)),
+      );
+
+      initWebviewListener();
+      bumpProgress();
+
+      startAstrBot(pseudoTerminal!);
+      terminalTabManager.initializeFixedTab(terminal);
+    } catch (e) {
+      isAstrBotStarting.value = false;
+      isAstrBotRunning.value = false;
+      showStartupProgress = false;
+      update();
+      rethrow;
+    }
+  }
+
+  Future<void> syncAstrBotDashboardPortConfig() async {
+    final files = [
+      File('${RuntimeEnvir.homePath}/cmd_config.json'),
+      File('$ubuntuPath/root/AstrBot/data/cmd_config.json'),
+    ];
+
+    for (final file in files) {
+      await _patchAstrBotDashboardPortConfig(file);
+    }
+  }
+
+  String _toUnixLineEndings(String content) {
+    return content.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+  }
+
+  Future<void> startAstrBot(Pty pseudoTerminal) async {
+    setProgress('开始启动 AstrBot...');
+    pseudoTerminal.writeString(
+        'source ${RuntimeEnvir.homePath}/common.sh\nstart_astrbot\n');
+  }
+
+  Future<void> stopAstrBot() async {
+    if (isAstrBotStopping.value) return;
+    isAstrBotStopping.value = true;
+    isAstrBotStarting.value = false;
+    showStartupProgress = false;
+    update();
+
+    try {
+      await _webviewSubscription?.cancel();
+      _webviewSubscription = null;
+
+      pseudoTerminal?.kill();
+      pseudoTerminal = null;
+
+      if (File('${RuntimeEnvir.homePath}/common.sh').existsSync()) {
+        await _runUbuntuShell(
+          'pkill -f "uv run --no-sync main.py" 2>/dev/null || true; '
+          'pkill -f "python.*main.py" 2>/dev/null || true; '
+          'pkill -f "/root/AstrBot/.venv.*main.py" 2>/dev/null || true',
+        );
+      }
+
+      _isLocalhostDetected = false;
+      _isQrcodeProcessed = false;
+      webviewHasOpen = false;
+      isAstrBotRunning.value = false;
+      _writeTerminal('\r\n[AstrBot] 已停止\r\n');
+    } catch (e) {
+      _writeTerminal('\r\n[AstrBot] 停止失败: $e\r\n');
+      rethrow;
+    } finally {
+      isAstrBotStopping.value = false;
+      update();
+    }
+  }
+
+  Future<void> _patchAstrBotDashboardPortConfig(File file) async {
+    if (!await file.exists()) return;
+
+    try {
+      final jsonData = jsonDecode(await file.readAsString());
+      if (jsonData is! Map<String, dynamic>) return;
+
+      final dashboard = jsonData['dashboard'];
+      if (dashboard is Map<String, dynamic>) {
+        dashboard['port'] = ServicePorts.dashboardPort;
+      }
+
+      await file.writeAsString(
+        const JsonEncoder.withIndent('  ').convert(jsonData),
+      );
+      Log.i('已同步 AstrBot 面板端口配置: ${file.path}', tag: 'AstrBot');
+    } catch (e) {
+      Log.e('同步 AstrBot 面板端口配置失败: ${file.path}, $e', tag: 'AstrBot');
+    }
+  }
+
+  Future<void> runEnvironmentStep({
+    required String step,
+    required String title,
+    bool reinstall = false,
+    void Function()? onCommandDone,
+  }) async {
+    await _prepareEnvironmentScripts();
+    final doneMarker = '__ASTRBOT_ENV_STEP_DONE__:$step';
+    final command = StringBuffer()
+      ..writeln('source ${RuntimeEnvir.homePath}/common.sh')
+      ..writeln('install_ubuntu')
+      ..writeln('copy_files')
+      ..writeln(
+        'login_ubuntu "export TMPDIR=${RuntimeEnvir.tmpPath}; '
+        'export L_NOT_INSTALLED=${S.current.uninstalled}; '
+        'export L_INSTALLING=${S.current.installing}; '
+        'export L_INSTALLED=${S.current.installed}; '
+        'export ASTRBOT_DASHBOARD_PORT=${ServicePorts.dashboardPort}; '
+        'export ASTRBOT_ONEBOT_WS_PORT=${ServicePorts.oneBotWsPort}; '
+        'export ASTRBOT_GITHUB_PROXY=${EnvironmentConfig.githubProxy}; '
+        'export ASTRBOT_FORCE_REINSTALL_STEP=${reinstall ? step : ''}; '
+        'chmod +x /root/astrbot-startup.sh; '
+        'bash /root/astrbot-startup.sh --step $step; '
+        'echo \\"__ASTRBOT_ENV_\\"\\"STEP_DONE__:$step\\""',
+      );
+    await terminalTabManager.addCommandTerminalTab(
+      title: title,
+      command: command.toString(),
+      onDoneMarker: doneMarker,
+      onCommandDone: onCommandDone,
+    );
+  }
+
+  Future<void> _prepareEnvironmentScripts() async {
     Directory(RuntimeEnvir.tmpPath).createSync(recursive: true);
     Directory(RuntimeEnvir.homePath).createSync(recursive: true);
     Directory(RuntimeEnvir.binPath).createSync(recursive: true);
 
     await initEnvir();
     createBusyboxLink();
-
-    // 创建终端
-    pseudoTerminal =
-        createPTY(rows: terminal.viewHeight, columns: terminal.viewWidth);
-    napcatTerminal = createPTY();
-
-    // 复制必要的文件
-    setProgress('复制 Ubuntu 系统镜像...');
-    await AssetsUtils.copyAssetToPath('assets/${Config.ubuntuFileName}',
-        '${RuntimeEnvir.homePath}/${Config.ubuntuFileName}');
+    final ubuntuAssetFile =
+        File('${RuntimeEnvir.homePath}/${Config.ubuntuFileName}');
+    if (!await ubuntuAssetFile.exists()) {
+      await AssetsUtils.copyAssetToPath(
+        'assets/${Config.ubuntuFileName}',
+        ubuntuAssetFile.path,
+      );
+    }
     await AssetsUtils.copyAssetToPath('assets/astrbot-startup.sh',
         '${RuntimeEnvir.homePath}/astrbot-startup.sh');
     await AssetsUtils.copyAssetToPath(
         'assets/cmd_config.json', '${RuntimeEnvir.homePath}/cmd_config.json');
-    bumpProgress();
 
-    // 获取当前应用版本号
     final appVersion = await getAppVersion();
-
-    // 替换 astrbot-startup.sh 中的版本号占位符
-    final startupScriptFile = File('${RuntimeEnvir.homePath}/astrbot-startup.sh');
+    final startupScriptFile =
+        File('${RuntimeEnvir.homePath}/astrbot-startup.sh');
     if (await startupScriptFile.exists()) {
-      String scriptContent = await startupScriptFile.readAsString();
+      var scriptContent = await startupScriptFile.readAsString();
       scriptContent = scriptContent.replaceAll('{{VERSION}}', appVersion);
-      await startupScriptFile.writeAsString(scriptContent);
+      await startupScriptFile.writeAsString(_toUnixLineEndings(scriptContent));
     }
 
-    // 写入 common.sh 脚本
-    File('${RuntimeEnvir.homePath}/common.sh')
-        .writeAsStringSync(getCommonScript(appVersion));
-
-    initWebviewListener();
-    bumpProgress();
-
-    initQrcodeListener();
-
-    startAstrBot(pseudoTerminal!);
-  }
-
-  Future<void> startAstrBot(Pty pseudoTerminal) async {
-    setProgress('开始安装 AstrBot...');
-    pseudoTerminal.writeString(
-        'source ${RuntimeEnvir.homePath}/common.sh\nstart_astrbot\n');
+    File('${RuntimeEnvir.homePath}/common.sh').writeAsStringSync(
+      _toUnixLineEndings(getCommonScript(appVersion)),
+    );
   }
 
   @override
@@ -647,11 +762,10 @@ class HomeController extends GetxController {
     // 初始化 NapCat WebUI 启用状态
     napCatWebUiEnabledRx.value = napCatWebUiEnabled.get() ?? false;
 
-    // 初始化显示终端白色文本状态
-    showTerminalWhiteTextRx.value = showTerminalWhiteText.get() ?? false;
-
     // 从持久化存储加载自定义 WebView 列表
     _loadCustomWebViews();
+    _loadHiddenWebUiTargetIds();
+    _loadNapCatInstances();
 
     // 为 Google Play 上架做准备
     // For Google Play
@@ -666,13 +780,9 @@ class HomeController extends GetxController {
       }
 
       // 加载并启动 AstrBot
-      loadAstrBot();
-
       // 在终端创建完成后初始化固定标签页
       // 等待terminal创建完成
-      Future.delayed(const Duration(milliseconds: 500), () {
-        terminalTabManager.initializeFixedTab(terminal);
-      });
+      terminalTabManager.initializeFixedTab(terminal);
     });
 
     // 监听应用生命周期状态变化
@@ -680,10 +790,11 @@ class HomeController extends GetxController {
       LifecycleObserver(
         onResume: () {
           _isAppInForeground = true;
-          // 当应用回到前台且两个条件都满足但webview未打开时，打开webview
+          // 当应用回到前台且 AstrBot 已就绪时，切到新版主界面的 WebUI 页。
           if (_isLocalhostDetected && _isQrcodeProcessed && !webviewHasOpen) {
             Future.microtask(() {
-              Get.toNamed(AppRoutes.webview);
+              requestOpenAstrBotWebUi();
+              _requestMainTab(1);
               webviewHasOpen = true;
             });
           }
@@ -744,10 +855,938 @@ class HomeController extends GetxController {
     napCatWebUiEnabledRx.value = value;
   }
 
-  // 更新显示终端白色文本状态（用于同步响应式变量）
-  void setShowTerminalWhiteText(bool value) {
-    showTerminalWhiteText.set(value);
-    showTerminalWhiteTextRx.value = value;
+  void _loadNapCatInstances() {
+    final stored = box!.get(
+      NapCatInstanceDefaults.storageKey,
+      defaultValue: <dynamic>[],
+    );
+    if (stored is! List) return;
+
+    napCatInstances.value = stored
+        .whereType<Map>()
+        .map((e) => _normalizeNapCatInstance(Map<String, dynamic>.from(e)))
+        .toList();
+  }
+
+  void _loadHiddenWebUiTargetIds() {
+    final stored = box!.get('hidden_webui_targets', defaultValue: <dynamic>[]);
+    if (stored is List) {
+      hiddenWebUiTargetIds.value =
+          stored.map((item) => item.toString()).toList();
+    }
+  }
+
+  void _saveHiddenWebUiTargetIds() {
+    box!.put('hidden_webui_targets', hiddenWebUiTargetIds.toList());
+  }
+
+  String _defaultNapCatName(int index) => '账号$index';
+
+  int _nextNapCatAccountIndex() {
+    final used = <int>{};
+    for (final instance in napCatInstances) {
+      final match = RegExp(r'^账号(\d+)$').firstMatch(
+        instance['name']?.toString() ?? '',
+      );
+      final value = int.tryParse(match?.group(1) ?? '');
+      if (value != null) used.add(value);
+    }
+    var index = 1;
+    while (used.contains(index)) {
+      index++;
+    }
+    return index;
+  }
+
+  Map<String, dynamic> _normalizeNapCatInstance(Map<String, dynamic> instance) {
+    final id = instance['id']?.toString().trim().isNotEmpty == true
+        ? instance['id'].toString()
+        : 'qq_${DateTime.now().millisecondsSinceEpoch}';
+    final webUiPort = _parseInt(
+      instance['webUiPort'],
+      NapCatInstanceDefaults.firstExtraWebUiPort,
+    );
+    final display = _parseInt(
+      instance['display'],
+      NapCatInstanceDefaults.firstExtraDisplay,
+    );
+    final autoLogin = instance['autoLogin'] == true;
+    final name = instance['name']?.toString().trim().isNotEmpty == true
+        ? instance['name'].toString()
+        : _defaultNapCatName(napCatInstances.length + 1);
+    return {
+      'id': id,
+      'name': name,
+      'qq': instance['qq']?.toString() ?? '',
+      'webUiPort': webUiPort,
+      'display': display,
+      'token': instance['token']?.toString() ?? '',
+      'autoLogin': autoLogin,
+      'autoLoginTouched': instance['autoLoginTouched'] == true,
+      'qqAutoDetected': instance['qqAutoDetected'] == true,
+      'running': _napCatInstanceTerminals.containsKey(id),
+    };
+  }
+
+  int _parseInt(dynamic value, int fallback) {
+    return value is int
+        ? value
+        : int.tryParse(value?.toString() ?? '') ?? fallback;
+  }
+
+  void _saveNapCatInstances() {
+    box!.put(
+      NapCatInstanceDefaults.storageKey,
+      napCatInstances
+          .map((instance) => {
+                'id': instance['id'],
+                'name': instance['name'],
+                'qq': instance['qq'],
+                'webUiPort': instance['webUiPort'],
+                'display': instance['display'],
+                'token': instance['token'],
+                'autoLogin': instance['autoLogin'] ?? false,
+                'autoLoginTouched': instance['autoLoginTouched'] ?? false,
+                'qqAutoDetected': instance['qqAutoDetected'] ?? false,
+              })
+          .toList(),
+    );
+  }
+
+  int _findInstanceIndex(String id) {
+    return napCatInstances.indexWhere((instance) => instance['id'] == id);
+  }
+
+  void _updateNapCatInstance(String id, Map<String, dynamic> patch) {
+    final index = _findInstanceIndex(id);
+    if (index < 0) return;
+    napCatInstances[index] = {
+      ...napCatInstances[index],
+      ...patch,
+    };
+    _saveNapCatInstances();
+  }
+
+  Future<bool> _isPortAvailable(int port) async {
+    ServerSocket? socket;
+    try {
+      socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, port);
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      await socket?.close();
+    }
+  }
+
+  bool _isDisplayReserved(int display, {String? exceptId}) {
+    if (display == ServicePorts.napCatXDisplay) return true;
+    return napCatInstances.any(
+      (instance) =>
+          instance['id'] != exceptId &&
+          _parseInt(instance['display'], -1) == display,
+    );
+  }
+
+  Future<int> _allocateNapCatWebUiPort({int? requestedPort}) async {
+    if (requestedPort != null) {
+      if (requestedPort < NapCatInstanceDefaults.firstExtraWebUiPort ||
+          requestedPort > NapCatInstanceDefaults.lastExtraWebUiPort) {
+        throw 'WebUI 端口必须在 ${NapCatInstanceDefaults.firstExtraWebUiPort}-${NapCatInstanceDefaults.lastExtraWebUiPort} 之间';
+      }
+      if (requestedPort == ServicePorts.dashboardPort ||
+          requestedPort == ServicePorts.oneBotWsPort ||
+          napCatInstances.any(
+            (instance) => _parseInt(instance['webUiPort'], -1) == requestedPort,
+          )) {
+        throw 'WebUI 端口 $requestedPort 已被配置占用';
+      }
+      if (!await _isPortAvailable(requestedPort)) {
+        throw 'WebUI 端口 $requestedPort 当前已被系统占用';
+      }
+      return requestedPort;
+    }
+
+    for (var port = NapCatInstanceDefaults.firstExtraWebUiPort;
+        port <= NapCatInstanceDefaults.lastExtraWebUiPort;
+        port++) {
+      if (port == ServicePorts.dashboardPort ||
+          port == ServicePorts.oneBotWsPort ||
+          napCatInstances.any(
+              (instance) => _parseInt(instance['webUiPort'], -1) == port)) {
+        continue;
+      }
+      if (await _isPortAvailable(port)) return port;
+    }
+    throw '没有找到可用的 WebUI 端口';
+  }
+
+  int _allocateNapCatDisplay({int? requestedDisplay}) {
+    if (requestedDisplay != null) {
+      if (requestedDisplay < 2 || requestedDisplay > 99) {
+        throw 'DISPLAY 建议填写 2-99';
+      }
+      if (_isDisplayReserved(requestedDisplay)) {
+        throw 'DISPLAY :$requestedDisplay 已被配置占用';
+      }
+      return requestedDisplay;
+    }
+
+    for (var display = NapCatInstanceDefaults.firstExtraDisplay;
+        display <= 99;
+        display++) {
+      if (!_isDisplayReserved(display)) return display;
+    }
+    throw '没有找到可用的 DISPLAY';
+  }
+
+  Future<void> addNapCatInstance({
+    int? webUiPort,
+    int? display,
+  }) async {
+    final allocatedPort = await _allocateNapCatWebUiPort(
+      requestedPort: webUiPort,
+    );
+    final allocatedDisplay = _allocateNapCatDisplay(
+      requestedDisplay: display,
+    );
+    final nextIndex = _nextNapCatAccountIndex();
+    final id = 'qq${nextIndex}_${DateTime.now().millisecondsSinceEpoch}';
+    napCatInstances.add({
+      'id': id,
+      'name': _defaultNapCatName(nextIndex),
+      'qq': '',
+      'webUiPort': allocatedPort,
+      'display': allocatedDisplay,
+      'token': '',
+      'autoLogin': false,
+      'autoLoginTouched': false,
+      'qqAutoDetected': false,
+      'running': false,
+    });
+    _saveNapCatInstances();
+  }
+
+  Future<void> removeNapCatInstance(String id) async {
+    await logoutNapCatInstance(id);
+    napCatInstances.removeWhere((instance) => instance['id'] == id);
+    _saveNapCatInstances();
+  }
+
+  Future<void> updateNapCatInstanceConfig({
+    required String id,
+    int? webUiPort,
+    String? name,
+    String? qq,
+  }) async {
+    final index = _findInstanceIndex(id);
+    if (index < 0) return;
+
+    final current = napCatInstances[index];
+    final currentPort = _parseInt(
+      current['webUiPort'],
+      NapCatInstanceDefaults.firstExtraWebUiPort,
+    );
+    final nextPort = webUiPort ?? currentPort;
+
+    if (nextPort != currentPort) {
+      if (nextPort < NapCatInstanceDefaults.firstExtraWebUiPort ||
+          nextPort > NapCatInstanceDefaults.lastExtraWebUiPort) {
+        throw 'WebUI 端口必须在 ${NapCatInstanceDefaults.firstExtraWebUiPort}-${NapCatInstanceDefaults.lastExtraWebUiPort} 之间';
+      }
+      final duplicated = napCatInstances.any(
+        (instance) =>
+            instance['id'] != id &&
+            _parseInt(instance['webUiPort'], -1) == nextPort,
+      );
+      if (duplicated ||
+          nextPort == ServicePorts.dashboardPort ||
+          nextPort == ServicePorts.oneBotWsPort) {
+        throw 'WebUI 端口 $nextPort 已被配置占用';
+      }
+      if (!await _isPortAvailable(nextPort)) {
+        throw 'WebUI 端口 $nextPort 当前已被系统占用';
+      }
+    }
+
+    _updateNapCatInstance(id, {
+      'webUiPort': nextPort,
+      if (name != null && name.trim().isNotEmpty) 'name': name.trim(),
+      if (qq != null) ...{
+        'qq': qq.trim(),
+        'qqAutoDetected': false,
+      },
+    });
+    final updated =
+        napCatInstances.firstWhereOrNull((item) => item['id'] == id);
+    if (updated == null) return;
+    await _writeNapCatInstanceLauncher(updated);
+    await _patchNapCatInstanceWebUiJson(updated);
+  }
+
+  Future<void> setNapCatInstanceAutoLogin(String id, bool enabled) async {
+    _updateNapCatInstance(id, {
+      'autoLogin': enabled,
+      'autoLoginTouched': true,
+    });
+    final instance =
+        napCatInstances.firstWhereOrNull((item) => item['id'] == id);
+    if (instance == null) return;
+    await _writeNapCatInstanceLauncher(instance);
+    await _patchNapCatInstanceWebUiJson(instance);
+  }
+
+  // Compatibility shim for legacy settings UI paths. New UI no longer exposes
+  // manual QQ quick-login input.
+  Future<void> setNapCatInstanceQuickLogin(String id, String qq) async {
+    _updateNapCatInstance(id, {
+      'qq': qq,
+      'autoLogin': qq.isNotEmpty,
+      'autoLoginTouched': true,
+      'qqAutoDetected': false,
+    });
+    final instance =
+        napCatInstances.firstWhereOrNull((item) => item['id'] == id);
+    if (instance == null) return;
+    await _writeNapCatInstanceLauncher(instance);
+    await _patchNapCatInstanceWebUiJson(instance);
+  }
+
+  Future<void> startNapCatInstance(String id) async {
+    final instance =
+        napCatInstances.firstWhereOrNull((item) => item['id'] == id);
+    if (instance == null || _napCatInstanceTerminals.containsKey(id)) return;
+
+    final port = _parseInt(instance['webUiPort'], 0);
+    if (!await _isPortAvailable(port)) {
+      throw 'WebUI 端口 $port 当前已被占用，请换一个端口';
+    }
+
+    final terminalName = instance['name']?.toString() ?? id;
+    _writeInstanceOutput(
+      terminalName,
+      '收到启动请求，正在准备 Ubuntu 入口脚本...',
+    );
+    await _prepareEnvironmentScripts();
+    await _writeNapCatInstanceLauncher(instance);
+    await _patchNapCatInstanceWebUiJson(instance);
+
+    _writeInstanceOutput(
+      terminalName,
+      '启动 NapCat：端口 $port，DISPLAY :${instance['display']}',
+    );
+    _scheduleNapCatInstanceQqProbe(id, terminalName);
+    final pty = createPTY();
+    _napCatInstanceTerminals[id] = pty;
+    _updateNapCatInstance(id, {'running': true});
+
+    final subscription = pty.output
+        .cast<List<int>>()
+        .transform(const Utf8Decoder(allowMalformed: true))
+        .listen((event) async {
+      _writeInstanceOutput(terminalName, event);
+      if (event.contains('WebUi Token:')) {
+        final match = RegExp(r'WebUi Token:\s+(\w+)').firstMatch(event);
+        final token = match?.group(1);
+        if (token != null && token.isNotEmpty) {
+          _updateNapCatInstance(id, {'token': token});
+        }
+        _scheduleNapCatInstanceQqProbe(id, terminalName);
+      }
+      if (event.contains('二维码已保存到')) {
+        unawaited(_showNapCatInstanceQrCode(instance));
+        _scheduleNapCatInstanceQqProbe(id, terminalName);
+      }
+      if (_looksLikeNapCatLoginStateEvent(event) || event.contains('配置加载')) {
+        _closeNapCatQrDialog(id);
+        _scheduleNapCatInstanceQqProbe(id, terminalName);
+      }
+    }, onDone: () {
+      _closeNapCatQrDialog(id);
+      _napCatInstanceTerminals.remove(id);
+      _napCatInstanceSubscriptions.remove(id);
+      _updateNapCatInstance(id, {'running': false});
+      _writeInstanceOutput(terminalName, 'NapCat 进程已退出');
+    }, onError: (error) {
+      _closeNapCatQrDialog(id);
+      _writeInstanceOutput(terminalName, '进程输出异常: $error');
+      _napCatInstanceTerminals.remove(id);
+      _napCatInstanceSubscriptions.remove(id);
+      _updateNapCatInstance(id, {'running': false});
+    });
+
+    _napCatInstanceSubscriptions[id] = subscription;
+    pty.writeString(_napCatInstanceCommand(id));
+  }
+
+  bool _looksLikeNapCatLoginStateEvent(String text) {
+    final lower = _cleanTerminalLog(text).toLowerCase();
+    return lower.contains('login success') ||
+        lower.contains('login successful') ||
+        lower.contains('已登录') ||
+        lower.contains('登录成功') ||
+        lower.contains('登陆成功');
+  }
+
+  void _scheduleNapCatInstanceQqProbe(
+    String id,
+    String terminalName,
+  ) {
+    for (final delay in [
+      const Duration(seconds: 3),
+      const Duration(seconds: 10),
+      const Duration(seconds: 30),
+    ]) {
+      Future.delayed(delay, () {
+        unawaited(_refreshNapCatInstanceQqFromFiles(id, terminalName));
+      });
+    }
+  }
+
+  Future<void> _refreshNapCatInstanceQqFromFiles(
+    String id,
+    String terminalName,
+  ) async {
+    if (_napCatInstanceQqProbing.contains(id)) return;
+    final index = _findInstanceIndex(id);
+    if (index < 0) return;
+
+    final current = napCatInstances[index];
+    final existingQq = current['qq']?.toString().trim() ?? '';
+    final wasAutoDetected = current['qqAutoDetected'] == true;
+    if (existingQq.isNotEmpty && !wasAutoDetected) return;
+
+    _napCatInstanceQqProbing.add(id);
+    try {
+      final qq = await _detectNapCatInstanceQqFromFiles(id);
+      if (qq == null) return;
+
+      final latestIndex = _findInstanceIndex(id);
+      if (latestIndex < 0) return;
+      final latest = napCatInstances[latestIndex];
+      final latestQq = latest['qq']?.toString().trim() ?? '';
+      if (latestQq.isNotEmpty && latest['qqAutoDetected'] != true) return;
+
+      _updateNapCatInstance(id, {
+        'qq': qq,
+        'autoLogin': true,
+        'qqAutoDetected': true,
+      });
+      if (latestQq != qq) {
+        _writeInstanceOutput(terminalName, '已从登录配置识别绑定 QQ：$qq');
+      }
+    } finally {
+      _napCatInstanceQqProbing.remove(id);
+    }
+  }
+
+  Future<String?> _detectNapCatInstanceQqFromFiles(String id) async {
+    final configQq = await _readNapCatAutoLoginAccount(id);
+    if (_looksLikeQqNumber(configQq)) return configQq;
+
+    final roots = [
+      Directory('$ubuntuPath/root/napcat_instances/${id}_home'),
+      Directory('$ubuntuPath/root/napcat_instances/${id}_napcat'),
+    ];
+    for (final root in roots) {
+      final qq = await _scanNapCatAccountFiles(root);
+      if (_looksLikeQqNumber(qq)) return qq;
+    }
+    return null;
+  }
+
+  Future<String?> _readNapCatAutoLoginAccount(String id) async {
+    final file = File(
+        '$ubuntuPath/root/napcat_instances/${id}_napcat/config/webui.json');
+    if (!await file.exists()) return null;
+    try {
+      final jsonData = jsonDecode(await file.readAsString());
+      if (jsonData is! Map<String, dynamic>) return null;
+      return jsonData['autoLoginAccount']?.toString().trim();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<String?> _scanNapCatAccountFiles(Directory root) async {
+    if (!await root.exists()) return null;
+
+    var scannedFiles = 0;
+    await for (final entity in root.list(recursive: true, followLinks: false)) {
+      final name = entity.uri.pathSegments.isEmpty
+          ? entity.path
+          : entity.uri.pathSegments.last;
+      final nameQq = _detectNapCatQqFromPathName(name);
+      if (_looksLikeQqNumber(nameQq)) return nameQq;
+
+      if (entity is! File) continue;
+      if (scannedFiles >= 120) break;
+      if (!_looksLikeAccountConfigFile(entity.path)) continue;
+
+      final stat = await entity.stat();
+      if (stat.size > 512 * 1024) continue;
+      scannedFiles++;
+
+      try {
+        final content = await entity.readAsString();
+        final qq = _detectNapCatQqFromConfigText(content);
+        if (_looksLikeQqNumber(qq)) return qq;
+      } catch (_) {
+        continue;
+      }
+    }
+    return null;
+  }
+
+  String? _detectNapCatQqFromPathName(String name) {
+    final exactConfigMatch = RegExp(
+      r'^(?:napcat|napcat_protocol|onebot11)_([1-9][0-9]{4,11})\.json$',
+      caseSensitive: false,
+    ).firstMatch(name);
+    if (_looksLikeQqNumber(exactConfigMatch?.group(1))) {
+      return exactConfigMatch?.group(1);
+    }
+
+    final keyedNameMatch = RegExp(
+      r'(?:uin|account|user|qq|napcat|onebot)[_-]?([1-9][0-9]{4,11})',
+      caseSensitive: false,
+    ).firstMatch(name);
+    return keyedNameMatch?.group(1);
+  }
+
+  bool _looksLikeAccountConfigFile(String path) {
+    final lower = path.toLowerCase().replaceAll('\\', '/');
+    if (lower.contains('/logs/') ||
+        lower.contains('/log/') ||
+        lower.contains('/cache/') ||
+        lower.contains('/chat/') ||
+        lower.contains('/message/') ||
+        lower.contains('/messages/')) {
+      return false;
+    }
+    return lower.endsWith('.json') ||
+        lower.endsWith('.dat') ||
+        lower.endsWith('.ini') ||
+        lower.endsWith('.conf') ||
+        lower.endsWith('.config');
+  }
+
+  String? _detectNapCatQqFromConfigText(String text) {
+    final patterns = [
+      RegExp(
+        r'"(?:uin|self_uin|selfUin|self_id|selfId|user_id|userId|account|accountUin|qq)"\s*:\s*"?([1-9][0-9]{4,11})"?',
+        caseSensitive: false,
+      ),
+      RegExp(
+        r'(?:uin|self_uin|selfUin|self_id|selfId|user_id|userId|account|accountUin|qq)\s*=\s*"?([1-9][0-9]{4,11})"?',
+        caseSensitive: false,
+      ),
+    ];
+    for (final pattern in patterns) {
+      final match = pattern.firstMatch(text);
+      final qq = match?.group(1);
+      if (_looksLikeQqNumber(qq)) return qq;
+    }
+    return null;
+  }
+
+  bool _looksLikeQqNumber(String? value) {
+    if (value == null) return false;
+    if (!RegExp(r'^[1-9][0-9]{4,11}$').hasMatch(value)) return false;
+    final number = int.tryParse(value);
+    if (number == null) return false;
+    return number >= 10000;
+  }
+
+  Future<void> stopNapCatInstance(String id) async {
+    _closeNapCatQrDialog(id);
+    await _napCatInstanceSubscriptions[id]?.cancel();
+    _napCatInstanceSubscriptions.remove(id);
+    _napCatInstanceTerminals[id]?.kill();
+    _napCatInstanceTerminals.remove(id);
+    await _stopNapCatInstanceProcesses(id);
+    _updateNapCatInstance(id, {'running': false});
+  }
+
+  Future<void> logoutNapCatInstance(String id) async {
+    await stopNapCatInstance(id);
+    await _deleteNapCatInstanceRuntime(id);
+    _updateNapCatInstance(id, {
+      'qq': '',
+      'token': '',
+      'autoLogin': false,
+      'autoLoginTouched': false,
+      'qqAutoDetected': false,
+      'running': false,
+    });
+  }
+
+  Future<void> deleteNapCatInstance(String id) async {
+    await logoutNapCatInstance(id);
+    napCatInstances.removeWhere((instance) => instance['id'] == id);
+    _saveNapCatInstances();
+  }
+
+  Future<void> renameNapCatInstance(String id, String name) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return;
+    _updateNapCatInstance(id, {'name': trimmed});
+  }
+
+  Future<void> toggleNapCatAutoLogin(String id, bool enabled) async {
+    _updateNapCatInstance(id, {
+      'autoLogin': enabled,
+      'autoLoginTouched': true,
+    });
+    final instance =
+        napCatInstances.firstWhereOrNull((item) => item['id'] == id);
+    if (instance != null) {
+      await _patchNapCatInstanceWebUiJson(instance);
+    }
+  }
+
+  String napCatInstanceWebUiUrl(Map<String, dynamic> instance) {
+    final port = _parseInt(
+        instance['webUiPort'], NapCatInstanceDefaults.firstExtraWebUiPort);
+    final token = instance['token']?.toString() ?? '';
+    final baseUrl = 'http://127.0.0.1:$port/webui';
+    return token.isEmpty ? baseUrl : '$baseUrl?token=$token';
+  }
+
+  void requestOpenNapCatWebUi(String id) {
+    final targetId = 'napcat:$id';
+    showWebUiTarget(targetId);
+    pendingWebUiTargetId.value = targetId;
+  }
+
+  void requestOpenAstrBotWebUi() {
+    const targetId = 'astrbot';
+    showWebUiTarget(targetId);
+    pendingWebUiTargetId.value = targetId;
+  }
+
+  void hideWebUiTarget(String id) {
+    if (!hiddenWebUiTargetIds.contains(id)) {
+      hiddenWebUiTargetIds.add(id);
+      _saveHiddenWebUiTargetIds();
+    }
+  }
+
+  void showWebUiTarget(String id) {
+    if (hiddenWebUiTargetIds.remove(id)) {
+      _saveHiddenWebUiTargetIds();
+    }
+  }
+
+  void clearPendingWebUiTargetId(String id) {
+    if (pendingWebUiTargetId.value == id) {
+      pendingWebUiTargetId.value = null;
+    }
+  }
+
+  String _napCatInstanceCommand(String id) {
+    return 'source ${RuntimeEnvir.homePath}/common.sh\n'
+        'login_ubuntu "echo [napcat-instance] run /root/launcher_$id.sh; chmod +x /root/launcher_$id.sh; bash /root/launcher_$id.sh"\n';
+  }
+
+  String _shellSingleQuote(String value) {
+    return "'${value.replaceAll("'", "'\"'\"'")}'";
+  }
+
+  Future<void> _writeNapCatInstanceLauncher(
+      Map<String, dynamic> instance) async {
+    final id = instance['id'].toString();
+    final webUiPort = _parseInt(
+      instance['webUiPort'],
+      NapCatInstanceDefaults.firstExtraWebUiPort,
+    );
+    final display = _parseInt(instance['display'], 22);
+    final qq = instance['qq']?.toString() ?? '';
+    final script = _buildNapCatInstanceLauncher(
+      id: id,
+      webUiPort: webUiPort,
+      display: display,
+      qq: qq,
+    );
+    final file = File('$ubuntuPath/root/launcher_$id.sh');
+    await file.writeAsString(_toUnixLineEndings(script));
+  }
+
+  String _buildNapCatInstanceLauncher({
+    required String id,
+    required int webUiPort,
+    required int display,
+    required String qq,
+  }) {
+    final quotedId = _shellSingleQuote(id);
+    final webUiJson = const JsonEncoder.withIndent('  ').convert({
+      'host': '0.0.0.0',
+      'port': webUiPort,
+      'prefix': '',
+      'token': '',
+      'loginRate': 3,
+      'autoLoginAccount': qq,
+    });
+    return '''
+#!/bin/bash
+set -u
+
+BASE_HOME="/root"
+INSTANCE_ID=$quotedId
+INSTANCE_HOME="\$BASE_HOME/napcat_instances/\${INSTANCE_ID}_home"
+INSTANCE_WORKDIR="\$BASE_HOME/napcat_instances/\${INSTANCE_ID}_napcat"
+INSTANCE_DISPLAY="$display"
+WEBUI_PORT="$webUiPort"
+ONEBOT_WS_PORT="${ServicePorts.oneBotWsPort}"
+
+mkdir -p "\$INSTANCE_HOME" "\$INSTANCE_WORKDIR/config" "\$INSTANCE_WORKDIR/logs" "\$INSTANCE_WORKDIR/cache"
+mkdir -p "\$INSTANCE_HOME/.config" "\$INSTANCE_HOME/.cache" "\$INSTANCE_HOME/.local/share"
+
+if [ -d "\$BASE_HOME/napcat/config" ]; then
+  cp -n "\$BASE_HOME/napcat/config/"*.json "\$INSTANCE_WORKDIR/config/" 2>/dev/null || true
+fi
+
+if [ ! -f "\$INSTANCE_WORKDIR/config/onebot11.json" ]; then
+  cat > "\$INSTANCE_WORKDIR/config/onebot11.json" <<EOF
+{
+  "network": {
+    "httpServers": [],
+    "httpClients": [],
+    "websocketServers": [],
+    "websocketClients": [
+      {
+        "name": "WsClient",
+        "enable": true,
+        "url": "ws://localhost:\$ONEBOT_WS_PORT/ws",
+        "messagePostFormat": "array",
+        "reportSelfMessage": false,
+        "reconnectInterval": 5000,
+        "token": "kasdkfljsadhlskdjhasdlkfshdlafksjdhf",
+        "debug": false,
+        "heartInterval": 30000
+      }
+    ]
+  },
+  "musicSignUrl": "",
+  "enableLocalFile2Url": false,
+  "parseMultMsg": false
+}
+EOF
+fi
+
+cat > "\$INSTANCE_WORKDIR/config/webui.json" <<'EOF'
+$webUiJson
+EOF
+
+sed -i -E "s#\\"url\\"[[:space:]]*:[[:space:]]*\\"ws://localhost:[0-9]+/ws\\"#\\"url\\": \\"ws://localhost:\$ONEBOT_WS_PORT/ws\\"#g" "\$INSTANCE_WORKDIR/config/onebot11.json"
+
+echo "[napcat-instance] id=\$INSTANCE_ID"
+echo "[napcat-instance] DISPLAY=:\$INSTANCE_DISPLAY"
+echo "[napcat-instance] NAPCAT_WORKDIR=\$INSTANCE_WORKDIR"
+echo "[napcat-instance] WEBUI_PORT=\$WEBUI_PORT"
+
+Xvfb ":\$INSTANCE_DISPLAY" -screen 0 1x1x8 +extension GLX +render > /dev/null 2>&1 &
+echo "\$!" > "\$INSTANCE_WORKDIR/xvfb.pid"
+export DISPLAY=":\$INSTANCE_DISPLAY"
+export NAPCAT_WORKDIR="\$INSTANCE_WORKDIR"
+export HOME="\$INSTANCE_HOME"
+export XDG_CONFIG_HOME="\$INSTANCE_HOME/.config"
+export XDG_CACHE_HOME="\$INSTANCE_HOME/.cache"
+export XDG_DATA_HOME="\$INSTANCE_HOME/.local/share"
+
+mkdir -p "\$XDG_CONFIG_HOME" "\$XDG_CACHE_HOME" "\$XDG_DATA_HOME"
+
+cd "\$BASE_HOME"
+trap "" SIGPIPE
+LD_PRELOAD=./libnapcat_launcher.so qq --no-sandbox
+''';
+  }
+
+  Future<void> _patchNapCatInstanceWebUiJson(
+      Map<String, dynamic> instance) async {
+    final id = instance['id'].toString();
+    final file = File(
+        '$ubuntuPath/root/napcat_instances/${id}_napcat/config/webui.json');
+    if (!await file.exists()) return;
+
+    try {
+      final jsonData = jsonDecode(await file.readAsString());
+      if (jsonData is! Map<String, dynamic>) return;
+      jsonData['port'] = _parseInt(
+        instance['webUiPort'],
+        NapCatInstanceDefaults.firstExtraWebUiPort,
+      );
+      jsonData['autoLoginAccount'] = instance['qq']?.toString() ?? '';
+      await file.writeAsString(
+        const JsonEncoder.withIndent('  ').convert(jsonData),
+      );
+    } catch (e) {
+      Log.e('同步账号 webui.json 失败: ${file.path}, $e', tag: 'AstrBot-Napcat');
+    }
+  }
+
+  Future<void> _runUbuntuShell(String command) async {
+    final pty = createPTY();
+    final done = Completer<void>();
+    final sub = pty.output.listen(
+      (_) {},
+      onDone: () {
+        if (!done.isCompleted) done.complete();
+      },
+      onError: (_) {
+        if (!done.isCompleted) done.complete();
+      },
+    );
+    pty.writeString(
+      'source ${RuntimeEnvir.homePath}/common.sh\n'
+      'login_ubuntu ${_shellSingleQuote(command)}\n'
+      'exit\n',
+    );
+    await done.future.timeout(const Duration(seconds: 20), onTimeout: () {});
+    await sub.cancel();
+    pty.kill();
+  }
+
+  Future<void> _stopNapCatInstanceProcesses(String id) async {
+    final instance =
+        napCatInstances.firstWhereOrNull((item) => item['id'] == id);
+    final display = _parseInt(instance?['display'], -1);
+    final commands = [
+      'if [ -f /root/napcat_instances/${id}_napcat/qq.pid ]; then kill "\$(cat /root/napcat_instances/${id}_napcat/qq.pid)" 2>/dev/null || true; fi',
+      'if [ -f /root/napcat_instances/${id}_napcat/xvfb.pid ]; then kill "\$(cat /root/napcat_instances/${id}_napcat/xvfb.pid)" 2>/dev/null || true; fi',
+      'pkill -f "launcher_$id.sh" || true',
+      'pkill -f "napcat_instances/${id}_napcat" || true',
+      'pkill -f "napcat_instances/${id}_home" || true',
+      if (display > 0) 'pkill -f "Xvfb :$display" || true',
+      'rm -f /root/napcat_instances/${id}_napcat/qq.pid',
+      'rm -f /root/napcat_instances/${id}_napcat/xvfb.pid',
+    ];
+    for (final command in commands) {
+      await _runUbuntuShell(command);
+    }
+  }
+
+  Future<void> _deleteNapCatInstanceRuntime(String id) async {
+    await _stopNapCatInstanceProcesses(id);
+    final commands = [
+      'rm -rf /root/napcat_instances/${id}_napcat',
+      'rm -rf /root/napcat_instances/${id}_home',
+      'rm -f /root/launcher_$id.sh',
+    ];
+    for (final command in commands) {
+      await _runUbuntuShell(command);
+    }
+  }
+
+  Future<void> _showNapCatInstanceQrCode(Map<String, dynamic> instance) async {
+    final id = instance['id'].toString();
+    if (_napCatQrDialogs.containsKey(id)) return;
+    final name = instance['name']?.toString() ?? '账号';
+    final qrcodePath =
+        '$ubuntuPath/root/napcat_instances/${id}_napcat/cache/qrcode.png';
+    final qrcodeFile = File(qrcodePath);
+
+    if (!await qrcodeFile.exists()) {
+      Get.snackbar(
+        '二维码未找到',
+        qrcodePath,
+        snackPosition: SnackPosition.BOTTOM,
+        duration: const Duration(seconds: 3),
+      );
+      return;
+    }
+
+    final dialogState = _NapCatQrDialogState(
+      secondsLeft: _napCatQrExpireSeconds.obs,
+    );
+    _napCatQrDialogs[id] = dialogState;
+    dialogState.timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      final next = dialogState.secondsLeft.value - 1;
+      if (next <= 0) {
+        dialogState.secondsLeft.value = 0;
+        _closeNapCatQrDialog(id);
+        return;
+      }
+      dialogState.secondsLeft.value = next;
+    });
+
+    await Get.dialog(
+      Builder(
+        builder: (dialogContext) {
+          dialogState.close = () {
+            if (Navigator.of(dialogContext).canPop()) {
+              Navigator.of(dialogContext).pop();
+            }
+          };
+          return Dialog(
+            backgroundColor: Colors.white,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '$name QQ 登录',
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: '关闭',
+                        onPressed: () => Navigator.of(dialogContext).pop(),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Image.file(
+                    qrcodeFile,
+                    width: 220,
+                    height: 220,
+                    fit: BoxFit.contain,
+                  ),
+                  const SizedBox(height: 8),
+                  Obx(
+                    () => Text(
+                      '二维码将在 ${dialogState.secondsLeft.value} 秒后过期',
+                      style: const TextStyle(color: Colors.orange),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'WebUI 端口：${instance['webUiPort']}',
+                    style: const TextStyle(color: Colors.grey),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+      barrierDismissible: false,
+    );
+    _disposeNapCatQrDialog(id);
+  }
+
+  void _closeNapCatQrDialog(String id) {
+    final dialogState = _napCatQrDialogs[id];
+    if (dialogState == null || dialogState.closed) return;
+    dialogState.closed = true;
+    dialogState.close?.call();
+    _disposeNapCatQrDialog(id);
+  }
+
+  void _disposeNapCatQrDialog(String id) {
+    final dialogState = _napCatQrDialogs.remove(id);
+    if (dialogState == null) return;
+    dialogState.timer?.cancel();
+    dialogState.timer = null;
+    dialogState.close = null;
   }
 
   @override
@@ -770,9 +1809,25 @@ class HomeController extends GetxController {
         napcatTerminal?.kill();
         napcatTerminal = null;
       }
+      for (final subscription in _napCatInstanceSubscriptions.values) {
+        subscription.cancel();
+      }
+      _napCatInstanceSubscriptions.clear();
+      for (final id in _napCatQrDialogs.keys.toList()) {
+        _closeNapCatQrDialog(id);
+      }
+      for (final entry in _napCatInstanceTerminals.entries) {
+        Log.i('正在关闭账号 NapCat 进程: ${entry.key}', tag: 'AstrBot-Napcat');
+        entry.value.kill();
+      }
+      _napCatInstanceTerminals.clear();
     } catch (e) {
       Log.e('关闭终端进程时出错: $e', tag: 'AstrBot');
     }
+
+    _terminalWriteTimer?.cancel();
+    _terminalWriteTimer = null;
+    _terminalWriteBuffer = '';
 
     // 移除生命周期观察者
     WidgetsBinding.instance.removeObserver(
