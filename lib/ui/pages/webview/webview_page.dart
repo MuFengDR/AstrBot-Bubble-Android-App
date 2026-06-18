@@ -8,6 +8,7 @@ import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../controllers/terminal_controller.dart';
+import '../../widgets/glass_panel.dart';
 import '../settings/settings_page.dart';
 import '../terminal/terminal_tab_view.dart';
 import '../../navbar/bottom_nav_bar.dart';
@@ -865,59 +866,61 @@ class _WebViewPageState extends State<WebViewPage> {
   }
 
   Widget _buildWebUiTabBar(List<_WebUiTarget> targets, int selectedIndex) {
-    return Container(
-      height: 52,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        border: Border(
-          bottom: BorderSide(color: Theme.of(context).dividerColor),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+      child: GlassPanel(
+        borderRadius: BorderRadius.circular(24),
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        opacity: homeController.topNavGlassOpacity.value,
+        blur: homeController.glassBlurAmount.value * 30,
+        child: SizedBox(
+          height: 52,
+          child: Row(
+            children: [
+              Expanded(
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: targets.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  itemBuilder: (context, index) {
+                    final target = targets[index];
+                    final selected = index == selectedIndex;
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: GestureDetector(
+                        child: InputChip(
+                          selected: selected,
+                          showCheckmark: false,
+                          label: Text(target.title),
+                          avatar: Icon(target.icon, size: 18),
+                          deleteIcon: const Icon(Icons.close, size: 18),
+                          onDeleted: () => _confirmCloseWebUiTarget(target),
+                          onSelected: (_) {
+                            setState(() {
+                              _currentIndex = index;
+                            });
+                          },
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              IconButton(
+                tooltip: '添加自定义 WebUI',
+                onPressed: _showAddEmbeddedWebUiDialog,
+                icon: const Icon(Icons.add),
+              ),
+              IconButton(
+                tooltip: '刷新当前 WebUI',
+                onPressed: targets.isEmpty
+                    ? null
+                    : () => _refreshWebUiTarget(targets[selectedIndex]),
+                icon: const Icon(Icons.refresh),
+              ),
+            ],
+          ),
         ),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemCount: targets.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 8),
-              itemBuilder: (context, index) {
-                final target = targets[index];
-                final selected = index == selectedIndex;
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: GestureDetector(
-                    child: InputChip(
-                      selected: selected,
-                      showCheckmark: false,
-                      label: Text(target.title),
-                      avatar: Icon(target.icon, size: 18),
-                      deleteIcon: const Icon(Icons.close, size: 18),
-                      onDeleted: () => _confirmCloseWebUiTarget(target),
-                      onSelected: (_) {
-                        setState(() {
-                          _currentIndex = index;
-                        });
-                      },
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          IconButton(
-            tooltip: '添加自定义 WebUI',
-            onPressed: _showAddEmbeddedWebUiDialog,
-            icon: const Icon(Icons.add),
-          ),
-          IconButton(
-            tooltip: '刷新当前 WebUI',
-            onPressed: targets.isEmpty
-                ? null
-                : () => _refreshWebUiTarget(targets[selectedIndex]),
-            icon: const Icon(Icons.refresh),
-          ),
-        ],
       ),
     );
   }
@@ -955,8 +958,8 @@ class _WebViewPageState extends State<WebViewPage> {
 
     for (var i = 0; i < homeController.customWebViews.length; i++) {
       final webview = homeController.customWebViews[i];
-      final url = webview['url'] ?? '';
-      if (url.isEmpty) continue;
+      final url = _normalizeEmbeddedWebUiUrl(webview['url'] ?? '');
+      if (url == null) continue;
       final controller = _getCustomController(url);
       targets.add(
         _WebUiTarget(
@@ -971,6 +974,31 @@ class _WebViewPageState extends State<WebViewPage> {
     }
 
     return targets;
+  }
+
+  String? _normalizeEmbeddedWebUiUrl(String input) {
+    final value = input.trim();
+    if (value.isEmpty) return null;
+
+    final isFullUrl =
+        value.startsWith('http://') || value.startsWith('https://');
+    if (!isFullUrl) {
+      final port = int.tryParse(value);
+      if (port == null || !ServicePorts.isValidPort(port)) {
+        return null;
+      }
+      return 'http://127.0.0.1:$port';
+    }
+
+    try {
+      final uri = Uri.parse(value);
+      if (!uri.hasScheme || uri.host.isEmpty) return null;
+      if (uri.scheme != 'http' && uri.scheme != 'https') return null;
+      if (uri.hasPort && !ServicePorts.isValidPort(uri.port)) return null;
+      return uri.toString();
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> _showAddEmbeddedWebUiDialog() async {
@@ -1022,11 +1050,11 @@ class _WebViewPageState extends State<WebViewPage> {
     }
 
     final title = titleController.text.trim();
-    var url = urlController.text.trim();
+    final urlInput = urlController.text.trim();
     titleController.dispose();
     urlController.dispose();
 
-    if (title.isEmpty || url.isEmpty) {
+    if (title.isEmpty || urlInput.isEmpty) {
       Get.snackbar(
         '输入错误',
         '标题和 URL 不能为空',
@@ -1036,8 +1064,15 @@ class _WebViewPageState extends State<WebViewPage> {
       return;
     }
 
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      url = 'http://127.0.0.1:$url';
+    final url = _normalizeEmbeddedWebUiUrl(urlInput);
+    if (url == null) {
+      Get.snackbar(
+        '输入错误',
+        '请输入 1024-65535 的端口号，或完整的 http/https URL',
+        snackPosition: SnackPosition.BOTTOM,
+        duration: const Duration(seconds: 2),
+      );
+      return;
     }
 
     homeController.addCustomWebView(title, url);

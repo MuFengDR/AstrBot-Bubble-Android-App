@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../../controllers/terminal_controller.dart';
+import '../../widgets/glass_panel.dart';
 import '../launcher/launcher_page.dart';
 import '../settings/settings_page.dart';
 import '../terminal/terminal_tab_view.dart';
@@ -57,58 +58,94 @@ class _MainPageState extends State<MainPage> {
 
   @override
   Widget build(BuildContext context) {
-    if (_showSettings) {
-      return Scaffold(
-        appBar: AppBar(
+    return Obx(
+      () => BubbleBackground(
+        imagePath: homeController.homeBackgroundPath.value,
+        statusOverlayOpacity: homeController.statusOverlayOpacity.value,
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          extendBody: true,
+          body: _showSettings ? _buildSettingsPage() : _buildMainTabs(),
+          bottomNavigationBar: _showSettings ? null : _buildBottomNav(context),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSettingsPage() {
+    return Column(
+      children: [
+        GlassAppBar(
+          title: '设置',
+          opacity: homeController.topNavGlassOpacity.value,
+          blur: homeController.glassBlurAmount.value * 30,
           leading: IconButton(
             icon: const Icon(Icons.arrow_back),
             onPressed: _closeSettings,
           ),
-          title: const Text('设置'),
         ),
-        body: SafeArea(
+        Expanded(
           child: SettingsPage(
             astrBotController: WebViewPage.astrBotController,
             napCatController: WebViewPage.napCatController,
           ),
         ),
-      );
-    }
+      ],
+    );
+  }
 
-    return Scaffold(
-      body: SafeArea(
-        child: IndexedStack(
-          index: _currentIndex,
-          children: [
-            LauncherPage(
-              onNavigate: _openTab,
-              onOpenSettings: _openSettings,
-            ),
-            WebViewPage(embedded: true),
-            const TerminalTabView(),
-          ],
-        ),
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _currentIndex,
-        onDestinationSelected: _openTab,
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.smart_toy_outlined),
-            selectedIcon: Icon(Icons.smart_toy),
-            label: '主页',
+  Widget _buildMainTabs() {
+    return SafeArea(
+      bottom: false,
+      child: IndexedStack(
+        index: _currentIndex,
+        children: [
+          LauncherPage(
+            onNavigate: _openTab,
+            onOpenSettings: _openSettings,
           ),
-          NavigationDestination(
-            icon: Icon(Icons.language_outlined),
-            selectedIcon: Icon(Icons.language),
-            label: 'WebUI',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.terminal_outlined),
-            selectedIcon: Icon(Icons.terminal),
-            label: '终端',
-          ),
+          WebViewPage(embedded: true),
+          const TerminalTabView(),
         ],
+      ),
+    );
+  }
+
+  Widget _buildBottomNav(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+        child: GlassPanel(
+          borderRadius: BorderRadius.circular(28),
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          opacity: homeController.cardGlassOpacity.value,
+          blur: homeController.glassBlurAmount.value * 30,
+          child: NavigationBar(
+            selectedIndex: _currentIndex,
+            onDestinationSelected: _openTab,
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            height: 64,
+            destinations: const [
+              NavigationDestination(
+                icon: Icon(Icons.smart_toy_outlined),
+                selectedIcon: Icon(Icons.smart_toy),
+                label: '主页',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.language_outlined),
+                selectedIcon: Icon(Icons.language),
+                label: 'WebUI',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.terminal_outlined),
+                selectedIcon: Icon(Icons.terminal),
+                label: '终端',
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

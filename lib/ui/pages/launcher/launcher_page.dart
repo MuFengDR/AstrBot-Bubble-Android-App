@@ -8,6 +8,7 @@ import '../../../core/config/environment_config.dart';
 import '../../../core/config/service_ports.dart';
 import '../../../core/constants/scripts.dart' as scripts;
 import '../../controllers/terminal_controller.dart';
+import '../../widgets/glass_panel.dart';
 
 class LauncherPage extends StatefulWidget {
   final ValueChanged<int>? onNavigate;
@@ -279,165 +280,174 @@ class _LauncherPageState extends State<LauncherPage>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('AstrBot'),
-        actions: [
-          IconButton(
-            tooltip: '设置',
-            onPressed: _openSettings,
-            icon: const Icon(Icons.settings),
+    return Column(
+      children: [
+        GlassAppBar(
+          title: 'AstrBot',
+          opacity: homeController.topNavGlassOpacity.value,
+          blur: homeController.glassBlurAmount.value * 30,
+          actions: [
+            IconButton(
+              tooltip: '设置',
+              onPressed: _openSettings,
+              icon: const Icon(Icons.settings),
+            ),
+          ],
+        ),
+        Expanded(
+          child: ListView(
+            physics: const BouncingScrollPhysics(
+              parent: AlwaysScrollableScrollPhysics(),
+            ),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 104),
+            children: [
+              _buildQuickStartCard(context),
+              const SizedBox(height: 12),
+              _buildNapCatAccountsCard(context),
+              const SizedBox(height: 12),
+              _buildEnvironmentCard(context),
+            ],
           ),
-        ],
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          _buildQuickStartCard(context),
-          const SizedBox(height: 12),
-          _buildNapCatAccountsCard(context),
-          const SizedBox(height: 12),
-          _buildEnvironmentCard(context),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
   Widget _buildQuickStartCard(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.smart_toy),
-                const SizedBox(width: 8),
-                Text('AstrBot', style: Theme.of(context).textTheme.titleMedium),
-              ],
+    return GlassPanel(
+      padding: const EdgeInsets.all(16),
+      opacity: homeController.cardGlassOpacity.value,
+      blur: homeController.glassBlurAmount.value * 30,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.smart_toy),
+              const SizedBox(width: 8),
+              Text('AstrBot', style: Theme.of(context).textTheme.titleMedium),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            leading: const Icon(Icons.settings_ethernet),
+            title: const Text('监听端口'),
+            subtitle: Text('127.0.0.1:${ServicePorts.dashboardPort}'),
+            trailing: IconButton(
+              tooltip: '修改 AstrBot 端口',
+              onPressed: _showAstrBotPortDialog,
+              icon: const Icon(Icons.edit),
             ),
-            const SizedBox(height: 12),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              dense: true,
-              leading: const Icon(Icons.settings_ethernet),
-              title: const Text('监听端口'),
-              subtitle: Text('127.0.0.1:${ServicePorts.dashboardPort}'),
-              trailing: IconButton(
-                tooltip: '修改 AstrBot 端口',
-                onPressed: _showAstrBotPortDialog,
-                icon: const Icon(Icons.edit),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: Obx(
-                    () {
-                      final starting = homeController.isAstrBotStarting.value;
-                      final running = homeController.isAstrBotRunning.value;
-                      final stopping = homeController.isAstrBotStopping.value;
-                      final busy = starting || stopping;
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: Obx(
+                  () {
+                    final starting = homeController.isAstrBotStarting.value;
+                    final running = homeController.isAstrBotRunning.value;
+                    final stopping = homeController.isAstrBotStopping.value;
+                    final busy = starting || stopping;
 
-                      return FilledButton.icon(
-                        onPressed: busy
-                            ? null
-                            : running
-                                ? _stopAstrBot
-                                : _startAstrBot,
-                        icon: busy
+                    return FilledButton.icon(
+                      onPressed: busy
+                          ? null
+                          : running
+                              ? _stopAstrBot
+                              : _startAstrBot,
+                      icon: busy
                           ? const SizedBox(
                               width: 16,
                               height: 16,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                            : Icon(running ? Icons.stop : Icons.play_arrow),
-                        label: Text(
-                          starting
-                              ? '启动中'
-                              : stopping
-                                  ? '停止中'
-                                  : running
-                                      ? '停止'
-                                      : '启动 AstrBot',
-                        ),
-                      );
-                    },
-                  ),
+                          : Icon(running ? Icons.stop : Icons.play_arrow),
+                      label: Text(
+                        starting
+                            ? '启动中'
+                            : stopping
+                                ? '停止中'
+                                : running
+                                    ? '停止'
+                                    : '启动 AstrBot',
+                      ),
+                    );
+                  },
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: FilledButton.tonalIcon(
-                    onPressed: () {
-                      homeController.requestOpenAstrBotWebUi();
-                      widget.onNavigate?.call(1);
-                    },
-                    icon: const Icon(Icons.language),
-                    label: const Text('打开 WebUI'),
-                  ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton.tonalIcon(
+                  onPressed: () {
+                    homeController.requestOpenAstrBotWebUi();
+                    widget.onNavigate?.call(1);
+                  },
+                  icon: const Icon(Icons.language),
+                  label: const Text('打开 WebUI'),
                 ),
-              ],
-            ),
-          ],
-        ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
 
   Widget _buildNapCatAccountsCard(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.pets),
-                const SizedBox(width: 8),
-                Text(
-                  'NapCat 账号',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                const Spacer(),
-                IconButton(
-                  tooltip: '添加账号',
-                  onPressed: _showAddNapCatAccountDialog,
-                  icon: const Icon(Icons.add),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Obx(() {
-              final instances = homeController.napCatInstances;
-              if (instances.isEmpty) {
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(
-                      '添加账号后单独扫码登录，每个账号独立端口和登录态。',
-                      style: Theme.of(context).textTheme.bodyMedium,
-                    ),
-                    const SizedBox(height: 12),
-                    OutlinedButton.icon(
-                      onPressed: _showAddNapCatAccountDialog,
-                      icon: const Icon(Icons.person_add_alt_1),
-                      label: const Text('添加账号'),
-                    ),
-                  ],
-                );
-              }
-
+    return GlassPanel(
+      padding: const EdgeInsets.all(16),
+      opacity: homeController.cardGlassOpacity.value,
+      blur: homeController.glassBlurAmount.value * 30,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.pets),
+              const SizedBox(width: 8),
+              Text(
+                'NapCat 账号',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const Spacer(),
+              IconButton(
+                tooltip: '添加账号',
+                onPressed: _showAddNapCatAccountDialog,
+                icon: const Icon(Icons.add),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Obx(() {
+            final instances = homeController.napCatInstances;
+            if (instances.isEmpty) {
               return Column(
-                children: instances
-                    .map((instance) => _buildNapCatAccountTile(instance))
-                    .toList(),
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    '添加账号后单独扫码登录，每个账号独立端口和登录态。',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: _showAddNapCatAccountDialog,
+                    icon: const Icon(Icons.person_add_alt_1),
+                    label: const Text('添加账号'),
+                  ),
+                ],
               );
-            }),
-          ],
-        ),
+            }
+
+            return Column(
+              children: instances
+                  .map((instance) => _buildNapCatAccountTile(instance))
+                  .toList(),
+            );
+          }),
+        ],
       ),
     );
   }
@@ -614,7 +624,8 @@ class _LauncherPageState extends State<LauncherPage>
 
     try {
       await homeController.addNapCatInstance(webUiPort: webUiPort);
-      Future.delayed(const Duration(milliseconds: 300), _refreshEnvironmentStatus);
+      Future.delayed(
+          const Duration(milliseconds: 300), _refreshEnvironmentStatus);
     } catch (e) {
       _showSnack('添加失败：$e');
     }
@@ -648,7 +659,8 @@ class _LauncherPageState extends State<LauncherPage>
         webUiPort: port,
         name: name,
       );
-      Future.delayed(const Duration(milliseconds: 300), _refreshEnvironmentStatus);
+      Future.delayed(
+          const Duration(milliseconds: 300), _refreshEnvironmentStatus);
     } catch (e) {
       _showSnack('保存失败：$e');
     }
@@ -818,53 +830,53 @@ class _LauncherPageState extends State<LauncherPage>
       ),
     ];
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: ExpansionTile(
-          tilePadding: EdgeInsets.zero,
-          leading: const Icon(Icons.inventory_2_outlined),
-          title: Text('环境管理', style: Theme.of(context).textTheme.titleMedium),
-          subtitle: const Text('分步安装与修复组件'),
-          trailing: _checkingEnvironment
-              ? const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : IconButton(
-                  tooltip: '刷新状态',
-                  onPressed: _refreshEnvironmentStatus,
-                  icon: const Icon(Icons.refresh),
-                ),
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(top: 12),
-              child: DropdownButtonFormField<String>(
-                initialValue: EnvironmentConfig.githubProxy,
-                decoration: const InputDecoration(
-                  labelText: 'GitHub 代理',
-                  border: OutlineInputBorder(),
-                ),
-                items: EnvironmentConfig.githubProxyOptions
-                    .map(
-                      (option) => DropdownMenuItem<String>(
-                        value: option['value'],
-                        child: Text(option['name'] ?? option['value']!),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (value) {
-                  if (value == null) return;
-                  EnvironmentConfig.setGithubProxy(value);
-                  setState(() {});
-                },
+    return GlassPanel(
+      padding: const EdgeInsets.all(16),
+      opacity: homeController.cardGlassOpacity.value,
+      blur: homeController.glassBlurAmount.value * 30,
+      child: ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        leading: const Icon(Icons.inventory_2_outlined),
+        title: Text('环境管理', style: Theme.of(context).textTheme.titleMedium),
+        subtitle: const Text('分步安装与修复组件'),
+        trailing: _checkingEnvironment
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : IconButton(
+                tooltip: '刷新状态',
+                onPressed: _refreshEnvironmentStatus,
+                icon: const Icon(Icons.refresh),
               ),
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: DropdownButtonFormField<String>(
+              initialValue: EnvironmentConfig.githubProxy,
+              decoration: const InputDecoration(
+                labelText: 'GitHub 代理',
+                border: OutlineInputBorder(),
+              ),
+              items: EnvironmentConfig.githubProxyOptions
+                  .map(
+                    (option) => DropdownMenuItem<String>(
+                      value: option['value'],
+                      child: Text(option['name'] ?? option['value']!),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (value) {
+                if (value == null) return;
+                EnvironmentConfig.setGithubProxy(value);
+                setState(() {});
+              },
             ),
-            const SizedBox(height: 8),
-            ...steps.map(_buildEnvironmentStepTile),
-          ],
-        ),
+          ),
+          const SizedBox(height: 8),
+          ...steps.map(_buildEnvironmentStepTile),
+        ],
       ),
     );
   }
