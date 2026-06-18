@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import '../../core/config/app_config.dart';
 import '../../core/config/environment_config.dart';
 import '../../core/config/service_ports.dart';
+import '../../core/config/ui_preferences.dart';
 import '../../generated/l10n.dart';
 import '../../core/constants/scripts.dart';
 import '../../core/utils/file_utils.dart';
@@ -54,6 +55,11 @@ class HomeController extends GetxController {
   final RxBool isAstrBotStarting = false.obs;
   final RxBool isAstrBotRunning = false.obs;
   final RxBool isAstrBotStopping = false.obs;
+  final RxString homeBackgroundPath = ''.obs;
+  final RxDouble cardGlassOpacity = 0.62.obs;
+  final RxDouble glassBlurAmount = 0.45.obs;
+  final RxDouble topNavGlassOpacity = 0.62.obs;
+  final RxDouble statusOverlayOpacity = 0.38.obs;
   final Map<String, Pty> _napCatInstanceTerminals = {};
   final Map<String, StreamSubscription> _napCatInstanceSubscriptions = {};
   final Set<String> _napCatInstanceQqProbing = {};
@@ -766,6 +772,7 @@ class HomeController extends GetxController {
     _loadCustomWebViews();
     _loadHiddenWebUiTargetIds();
     _loadNapCatInstances();
+    _loadUiPreferences();
 
     // 为 Google Play 上架做准备
     // For Google Play
@@ -853,6 +860,44 @@ class HomeController extends GetxController {
   void setNapCatWebUiEnabled(bool value) {
     napCatWebUiEnabled.set(value);
     napCatWebUiEnabledRx.value = value;
+  }
+
+  void _loadUiPreferences() {
+    homeBackgroundPath.value = UiPreferences.homeBackgroundPath;
+    cardGlassOpacity.value = UiPreferences.cardGlassOpacity;
+    glassBlurAmount.value = UiPreferences.glassBlurAmount;
+    topNavGlassOpacity.value = UiPreferences.topNavGlassOpacity;
+    statusOverlayOpacity.value = UiPreferences.statusOverlayOpacity;
+  }
+
+  void setHomeBackgroundPath(String path) {
+    UiPreferences.saveHomeBackgroundPath(path);
+    homeBackgroundPath.value = path;
+  }
+
+  void clearHomeBackgroundPath() {
+    UiPreferences.clearHomeBackgroundPath();
+    homeBackgroundPath.value = '';
+  }
+
+  void setCardGlassOpacity(double value) {
+    UiPreferences.saveCardGlassOpacity(value);
+    cardGlassOpacity.value = UiPreferences.cardGlassOpacity;
+  }
+
+  void setGlassBlurAmount(double value) {
+    UiPreferences.saveGlassBlurAmount(value);
+    glassBlurAmount.value = UiPreferences.glassBlurAmount;
+  }
+
+  void setTopNavGlassOpacity(double value) {
+    UiPreferences.saveTopNavGlassOpacity(value);
+    topNavGlassOpacity.value = UiPreferences.topNavGlassOpacity;
+  }
+
+  void setStatusOverlayOpacity(double value) {
+    UiPreferences.saveStatusOverlayOpacity(value);
+    statusOverlayOpacity.value = UiPreferences.statusOverlayOpacity;
   }
 
   void _loadNapCatInstances() {

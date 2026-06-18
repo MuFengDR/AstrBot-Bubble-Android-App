@@ -9,6 +9,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:file_picker/file_picker.dart';
 import '../../controllers/terminal_controller.dart';
 import '../../../core/constants/scripts.dart' as scripts;
 import '../../../core/services/password_manager.dart';
@@ -55,7 +56,79 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   String _displayVersion(String version) {
-    return version == '0.1.0-bate1' ? '0.1.0 bate1' : version;
+    return version.split('+').first.replaceAll('-', ' ');
+  }
+
+  Future<void> _pickHomeBackground() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        allowMultiple: false,
+      );
+      final path = result?.files.single.path;
+      if (path == null || path.isEmpty) return;
+
+      Get.find<HomeController>().setHomeBackgroundPath(path);
+      Get.snackbar(
+        '已更新背景',
+        '主页背景图片已生效',
+        snackPosition: SnackPosition.BOTTOM,
+        duration: const Duration(seconds: 2),
+      );
+    } catch (e) {
+      Get.snackbar(
+        '选择失败',
+        e.toString(),
+        snackPosition: SnackPosition.BOTTOM,
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+      );
+    }
+  }
+
+  void _clearHomeBackground() {
+    Get.find<HomeController>().clearHomeBackgroundPath();
+    Get.snackbar(
+      '已清除背景',
+      '主页已恢复默认背景',
+      snackPosition: SnackPosition.BOTTOM,
+      duration: const Duration(seconds: 2),
+    );
+  }
+
+  Widget _buildOpacitySlider({
+    required String title,
+    required String subtitle,
+    required IconData icon,
+    required double value,
+    required ValueChanged<double> onChanged,
+    double max = 0.95,
+    int divisions = 19,
+  }) {
+    final percent = (value * 100).round();
+    return ListTile(
+      leading: Icon(icon),
+      title: Row(
+        children: [
+          Expanded(child: Text(title)),
+          Text('$percent%'),
+        ],
+      ),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(subtitle),
+          Slider(
+            value: value.clamp(0.0, max).toDouble(),
+            min: 0.0,
+            max: max,
+            divisions: divisions,
+            label: '$percent%',
+            onChanged: onChanged,
+          ),
+        ],
+      ),
+    );
   }
 
   void _disposeTextControllersSafely(
@@ -223,8 +296,8 @@ class _SettingsPageState extends State<SettingsPage> {
 
   // 版本号比较
   int _compareVersions(String v1, String v2) {
-    final parts1 = v1.split('.').map((e) => int.tryParse(e) ?? 0).toList();
-    final parts2 = v2.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+    final parts1 = _versionNumbers(v1);
+    final parts2 = _versionNumbers(v2);
 
     for (int i = 0; i < 3; i++) {
       final p1 = i < parts1.length ? parts1[i] : 0;
@@ -233,6 +306,14 @@ class _SettingsPageState extends State<SettingsPage> {
       if (p1 < p2) return -1;
     }
     return 0;
+  }
+
+  List<int> _versionNumbers(String version) {
+    final normalized = version.replaceFirst(RegExp(r'^v'), '').split('+').first;
+    return normalized.split('.').map((part) {
+      final match = RegExp(r'^\d+').firstMatch(part);
+      return int.tryParse(match?.group(0) ?? '') ?? 0;
+    }).toList();
   }
 
   // 显示更新对话框
@@ -472,8 +553,7 @@ class _SettingsPageState extends State<SettingsPage> {
         await backupDir.create(recursive: true);
       }
 
-      final backupFileName =
-          '$_backupFilePrefix$timestamp$_backupFileSuffix';
+      final backupFileName = '$_backupFilePrefix$timestamp$_backupFileSuffix';
       final backupPath = '${backupDir.path}/$backupFileName';
 
       // 使用 tar 命令压缩 data 目录
@@ -958,6 +1038,65 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
           onTap: () => _checkForUpdates(),
         ),
+        Obx(() {
+          final backgroundPath =
+              Get.find<HomeController>().homeBackgroundPath.value;
+          return ListTile(
+            leading: const Icon(Icons.image_outlined),
+            title: const Text('主页背景图片'),
+            subtitle: Text(backgroundPath.isEmpty ? '使用默认背景' : backgroundPath),
+            trailing: backgroundPath.isEmpty
+                ? null
+                : IconButton(
+                    tooltip: '清除背景',
+                    onPressed: _clearHomeBackground,
+                    icon: const Icon(Icons.close),
+                  ),
+            onTap: _pickHomeBackground,
+          );
+        }),
+        Obx(() {
+          final controller = Get.find<HomeController>();
+          return _buildOpacitySlider(
+            title: '卡片透明度',
+            subtitle: '调整主页卡片和底部菜单的毛玻璃底色',
+            icon: Icons.layers_outlined,
+            value: controller.cardGlassOpacity.value,
+            onChanged: controller.setCardGlassOpacity,
+          );
+        }),
+        Obx(() {
+          final controller = Get.find<HomeController>();
+          return _buildOpacitySlider(
+            title: '毛玻璃度',
+            subtitle: '调整背景被模糊的强度，越低越清晰',
+            icon: Icons.blur_on,
+            value: controller.glassBlurAmount.value,
+            max: 1.0,
+            divisions: 20,
+            onChanged: controller.setGlassBlurAmount,
+          );
+        }),
+        Obx(() {
+          final controller = Get.find<HomeController>();
+          return _buildOpacitySlider(
+            title: '顶部导航透明度',
+            subtitle: '调整顶部标题栏和 WebUI/终端标签栏',
+            icon: Icons.view_day_outlined,
+            value: controller.topNavGlassOpacity.value,
+            onChanged: controller.setTopNavGlassOpacity,
+          );
+        }),
+        Obx(() {
+          final controller = Get.find<HomeController>();
+          return _buildOpacitySlider(
+            title: '状态栏透明度',
+            subtitle: '调整状态栏下方背景遮罩强度',
+            icon: Icons.phone_android_outlined,
+            value: controller.statusOverlayOpacity.value,
+            onChanged: controller.setStatusOverlayOpacity,
+          );
+        }),
         ListTile(
           leading: const Icon(Icons.restart_alt),
           title: const Text('更新或重装 AstrBot'),
