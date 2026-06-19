@@ -17,8 +17,13 @@ import '../../../core/config/service_ports.dart';
 
 class WebViewPage extends StatefulWidget {
   final bool embedded;
+  final double bottomContentInset;
 
-  const WebViewPage({super.key, this.embedded = false});
+  const WebViewPage({
+    super.key,
+    this.embedded = false,
+    this.bottomContentInset = 0,
+  });
 
   static WebViewController? _astrBotController;
   static WebViewController? _napCatController;
@@ -41,6 +46,7 @@ class _WebViewPageState extends State<WebViewPage> {
   late final WebViewController _napCatController;
   final Map<String, WebViewController> _customControllers =
       {}; // 存储自定义 WebView 控制器，使用 URL 作为 key
+  final Map<String, int> _webUiZoomLevels = {};
   Worker? _customWebViewsWorker;
   Worker? _napCatTokenWorker;
 
@@ -180,6 +186,7 @@ class _WebViewPageState extends State<WebViewPage> {
           onPageFinished: (String url) {
             _injectClipboardScript(_astrBotController);
             _disableZoom(_astrBotController);
+            _applyWebUiZoom('astrbot', _astrBotController);
             _injectPasswordScript(_astrBotController, url);
           },
           onWebResourceError: (WebResourceError error) {
@@ -236,6 +243,7 @@ class _WebViewPageState extends State<WebViewPage> {
           },
           onPageFinished: (String url) {
             _disableZoom(_napCatController);
+            _applyWebUiZoom('napcat', _napCatController);
             _injectPasswordScript(_napCatController, url);
           },
           onWebResourceError: (WebResourceError error) {
@@ -309,6 +317,7 @@ class _WebViewPageState extends State<WebViewPage> {
           },
           onPageFinished: (String pageUrl) {
             _disableZoom(controller);
+            _applyWebUiZoom('custom:$url', controller);
             _injectPasswordScript(controller, pageUrl);
           },
           onWebResourceError: (WebResourceError error) {
@@ -851,13 +860,16 @@ class _WebViewPageState extends State<WebViewPage> {
         children: [
           _buildWebUiTabBar(targets, selectedIndex),
           Expanded(
-            child: IndexedStack(
-              index: selectedIndex,
-              children: targets
-                  .map(
-                    (target) => WebViewWidget(controller: target.controller),
-                  )
-                  .toList(),
+            child: Padding(
+              padding: EdgeInsets.only(bottom: widget.bottomContentInset),
+              child: IndexedStack(
+                index: selectedIndex,
+                children: targets
+                    .map(
+                      (target) => WebViewWidget(controller: target.controller),
+                    )
+                    .toList(),
+              ),
             ),
           ),
         ],
@@ -867,58 +879,55 @@ class _WebViewPageState extends State<WebViewPage> {
 
   Widget _buildWebUiTabBar(List<_WebUiTarget> targets, int selectedIndex) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
       child: GlassPanel(
-        borderRadius: BorderRadius.circular(24),
-        padding: const EdgeInsets.symmetric(horizontal: 8),
+        borderRadius: BorderRadius.circular(18),
+        padding: const EdgeInsets.symmetric(horizontal: 6),
         opacity: homeController.topNavGlassOpacity.value,
         blur: homeController.glassBlurAmount.value * 30,
-        child: SizedBox(
-          height: 52,
-          child: Row(
-            children: [
-              Expanded(
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: targets.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 8),
-                  itemBuilder: (context, index) {
-                    final target = targets[index];
-                    final selected = index == selectedIndex;
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      child: GestureDetector(
-                        child: InputChip(
-                          selected: selected,
-                          showCheckmark: false,
-                          label: Text(target.title),
-                          avatar: Icon(target.icon, size: 18),
-                          deleteIcon: const Icon(Icons.close, size: 18),
-                          onDeleted: () => _confirmCloseWebUiTarget(target),
-                          onSelected: (_) {
-                            setState(() {
-                              _currentIndex = index;
-                            });
-                          },
+        child: MediaQuery.withNoTextScaling(
+          child: SizedBox(
+            height: 38,
+            child: Row(
+              children: [
+                Expanded(
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: targets.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 6),
+                    itemBuilder: (context, index) {
+                      final target = targets[index];
+                      final selected = index == selectedIndex;
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 3),
+                        child: GestureDetector(
+                          child: InputChip(
+                            selected: selected,
+                            showCheckmark: false,
+                            label: Text(target.title),
+                            avatar: Icon(target.icon, size: 16),
+                            deleteIcon: const Icon(Icons.close, size: 16),
+                            onDeleted: () => _confirmCloseWebUiTarget(target),
+                            onSelected: (_) {
+                              setState(() {
+                                _currentIndex = index;
+                              });
+                            },
+                          ),
                         ),
-                      ),
-                    );
-                  },
+                      );
+                    },
+                  ),
                 ),
-              ),
-              IconButton(
-                tooltip: '添加自定义 WebUI',
-                onPressed: _showAddEmbeddedWebUiDialog,
-                icon: const Icon(Icons.add),
-              ),
-              IconButton(
-                tooltip: '刷新当前 WebUI',
-                onPressed: targets.isEmpty
-                    ? null
-                    : () => _refreshWebUiTarget(targets[selectedIndex]),
-                icon: const Icon(Icons.refresh),
-              ),
-            ],
+                IconButton(
+                  tooltip: 'WebUI 菜单',
+                  onPressed: () => _showWebUiBrowserMenu(
+                    targets.isEmpty ? null : targets[selectedIndex],
+                  ),
+                  icon: const Icon(Icons.more_horiz, size: 22),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -1084,6 +1093,127 @@ class _WebViewPageState extends State<WebViewPage> {
     );
   }
 
+  Future<void> _showWebUiBrowserMenu(_WebUiTarget? target) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return SafeArea(
+              child: MediaQuery.withNoTextScaling(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ListTile(
+                        leading: const Icon(Icons.add),
+                        title: const Text('新建标签页'),
+                        onTap: () {
+                          Navigator.of(context).pop();
+                          _showAddEmbeddedWebUiDialog();
+                        },
+                      ),
+                      ListTile(
+                        leading: const Icon(Icons.refresh),
+                        title: const Text('刷新页面'),
+                        enabled: target != null,
+                        onTap: target == null
+                            ? null
+                            : () {
+                                Navigator.of(context).pop();
+                                _refreshWebUiTarget(target);
+                              },
+                      ),
+                      ListTile(
+                        leading: const Icon(Icons.open_in_browser),
+                        title: const Text('在浏览器中打开'),
+                        enabled: target != null,
+                        onTap: target == null
+                            ? null
+                            : () {
+                                Navigator.of(context).pop();
+                                _launchInBrowser(target.url);
+                              },
+                      ),
+                      if (target != null) ...[
+                        const Divider(height: 20),
+                        _buildZoomMenuItem(
+                          target,
+                          onChanged: () => setSheetState(() {}),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildZoomMenuItem(
+    _WebUiTarget target, {
+    required VoidCallback onChanged,
+  }) {
+    final zoom = _zoomForTarget(target);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      child: Row(
+        children: [
+          const Icon(Icons.text_increase),
+          const SizedBox(width: 16),
+          const Expanded(
+            child: Text(
+              '调整页面大小',
+              style: TextStyle(fontSize: 16),
+            ),
+          ),
+          IconButton(
+            tooltip: '小',
+            onPressed: zoom <= 50
+                ? null
+                : () {
+                    _setWebUiZoom(target, zoom - 10);
+                    onChanged();
+                  },
+            icon: const Icon(Icons.remove),
+          ),
+          SizedBox(
+            width: 52,
+            child: Text(
+              '$zoom%',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ),
+          IconButton(
+            tooltip: '大',
+            onPressed: zoom >= 150
+                ? null
+                : () {
+                    _setWebUiZoom(target, zoom + 10);
+                    onChanged();
+                  },
+            icon: const Icon(Icons.add),
+          ),
+          TextButton(
+            onPressed: zoom == 100
+                ? null
+                : () {
+                    _setWebUiZoom(target, 100);
+                    onChanged();
+                  },
+            child: const Text('默认'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _confirmCloseWebUiTarget(_WebUiTarget target) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -1144,6 +1274,59 @@ class _WebViewPageState extends State<WebViewPage> {
   Future<void> _refreshWebUiTarget(_WebUiTarget target) async {
     await target.controller.reload();
   }
+
+  int _zoomForTarget(_WebUiTarget target) {
+    return _webUiZoomLevels[target.id] ??
+        _webUiZoomLevels['custom:${target.url}'] ??
+        100;
+  }
+
+  Future<void> _setWebUiZoom(_WebUiTarget target, int zoom) async {
+    final normalizedZoom = zoom.clamp(50, 150).toInt();
+    setState(() {
+      _webUiZoomLevels[target.id] = normalizedZoom;
+      _webUiZoomLevels['custom:${target.url}'] = normalizedZoom;
+    });
+    await _applyWebUiZoom(target.id, target.controller);
+  }
+
+  Future<void> _applyWebUiZoom(
+    String targetId,
+    WebViewController controller,
+  ) async {
+    final zoom = (_webUiZoomLevels[targetId] ?? 100).clamp(50, 150).toInt();
+    final scale = (zoom / 100).toStringAsFixed(2);
+    final inverseScale = (100 / zoom).toStringAsFixed(4);
+    final jsCode = '''
+      (function() {
+        var id = 'astrbot-webui-zoom-style';
+        var style = document.getElementById(id);
+        if (!style) {
+          style = document.createElement('style');
+          style.id = id;
+          document.head.appendChild(style);
+        }
+        style.textContent = [
+          'html {',
+          '  zoom: $scale !important;',
+          '}',
+          '@supports not (zoom: 1) {',
+          '  html {',
+          '    transform: scale($scale) !important;',
+          '    transform-origin: 0 0 !important;',
+          '    width: $inverseScale% !important;',
+          '    min-height: $inverseScale% !important;',
+          '  }',
+          '}'
+        ].join('\\n');
+      })();
+    ''';
+    try {
+      await controller.runJavaScript(jsCode);
+    } catch (e) {
+      debugPrint('Failed to apply WebUI zoom: $e');
+    }
+  }
 }
 
 class _WebUiTarget {
@@ -1163,3 +1346,4 @@ class _WebUiTarget {
     this.customWebViewIndex,
   });
 }
+

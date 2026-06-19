@@ -60,6 +60,7 @@ class HomeController extends GetxController {
   final RxDouble glassBlurAmount = 0.45.obs;
   final RxDouble topNavGlassOpacity = 0.62.obs;
   final RxDouble statusOverlayOpacity = 0.38.obs;
+  final RxDouble terminalOverlayOpacity = 0.55.obs;
   final Map<String, Pty> _napCatInstanceTerminals = {};
   final Map<String, StreamSubscription> _napCatInstanceSubscriptions = {};
   final Set<String> _napCatInstanceQqProbing = {};
@@ -91,6 +92,10 @@ class HomeController extends GetxController {
   Timer? _terminalWriteTimer;
 
   String get startupLogText => _startupLogText;
+
+  void clearStartupLog() {
+    _startupLogText = '';
+  }
 
   File progressFile = File('${RuntimeEnvir.tmpPath}/progress');
   File progressDesFile = File('${RuntimeEnvir.tmpPath}/progress_des');
@@ -868,6 +873,7 @@ class HomeController extends GetxController {
     glassBlurAmount.value = UiPreferences.glassBlurAmount;
     topNavGlassOpacity.value = UiPreferences.topNavGlassOpacity;
     statusOverlayOpacity.value = UiPreferences.statusOverlayOpacity;
+    terminalOverlayOpacity.value = UiPreferences.terminalOverlayOpacity;
   }
 
   void setHomeBackgroundPath(String path) {
@@ -898,6 +904,11 @@ class HomeController extends GetxController {
   void setStatusOverlayOpacity(double value) {
     UiPreferences.saveStatusOverlayOpacity(value);
     statusOverlayOpacity.value = UiPreferences.statusOverlayOpacity;
+  }
+
+  void setTerminalOverlayOpacity(double value) {
+    UiPreferences.saveTerminalOverlayOpacity(value);
+    terminalOverlayOpacity.value = UiPreferences.terminalOverlayOpacity;
   }
 
   void _loadNapCatInstances() {
