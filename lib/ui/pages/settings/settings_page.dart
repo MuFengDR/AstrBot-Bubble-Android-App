@@ -1097,6 +1097,16 @@ class _SettingsPageState extends State<SettingsPage> {
             onChanged: controller.setStatusOverlayOpacity,
           );
         }),
+        Obx(() {
+          final controller = Get.find<HomeController>();
+          return _buildOpacitySlider(
+            title: '终端黑色遮罩',
+            subtitle: '调整终端透明背景上的黑色遮罩强度',
+            icon: Icons.terminal,
+            value: controller.terminalOverlayOpacity.value,
+            onChanged: controller.setTerminalOverlayOpacity,
+          );
+        }),
         ListTile(
           leading: const Icon(Icons.restart_alt),
           title: const Text('更新或重装 AstrBot'),

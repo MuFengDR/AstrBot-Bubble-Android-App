@@ -7,6 +7,8 @@ class UiPreferences {
   static SettingNode get _topNavGlassOpacity => 'top_nav_glass_opacity'.setting;
   static SettingNode get _statusOverlayOpacity =>
       'status_overlay_opacity'.setting;
+  static SettingNode get _terminalOverlayOpacity =>
+      'terminal_overlay_opacity'.setting;
 
   static String get homeBackgroundPath =>
       _homeBackgroundPath.get()?.toString() ?? '';
@@ -16,6 +18,8 @@ class UiPreferences {
       _readOpacity(_topNavGlassOpacity, 0.62);
   static double get statusOverlayOpacity =>
       _readOpacity(_statusOverlayOpacity, 0.38);
+  static double get terminalOverlayOpacity =>
+      _readOpacity(_terminalOverlayOpacity, 0.55);
 
   static void saveHomeBackgroundPath(String path) {
     _homeBackgroundPath.set(path);
@@ -39,6 +43,10 @@ class UiPreferences {
 
   static void saveStatusOverlayOpacity(double value) {
     _statusOverlayOpacity.set(_normalizeOpacity(value));
+  }
+
+  static void saveTerminalOverlayOpacity(double value) {
+    _terminalOverlayOpacity.set(_normalizeOpacity(value));
   }
 
   static double _readOpacity(SettingNode node, double fallback) {

@@ -127,24 +127,26 @@ class GlassAppBar extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
           opacity: opacity,
           blur: blur,
-          child: Row(
-            children: [
-              if (leading != null) leading!,
-              if (leading != null) const SizedBox(width: 4),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: Text(
-                    title,
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
-                    overflow: TextOverflow.ellipsis,
+          child: MediaQuery.withNoTextScaling(
+            child: Row(
+              children: [
+                if (leading != null) leading!,
+                if (leading != null) const SizedBox(width: 4),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Text(
+                      title,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ),
-              ),
-              ...actions,
-            ],
+                ...actions,
+              ],
+            ),
           ),
         ),
       ),

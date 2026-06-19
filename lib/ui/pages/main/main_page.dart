@@ -16,6 +16,8 @@ class MainPage extends StatefulWidget {
 }
 
 class _MainPageState extends State<MainPage> {
+  static const double _bottomNavReservedHeight = 60;
+
   final HomeController homeController = Get.put(HomeController());
   Worker? _mainTabWorker;
   int _currentIndex = 0;
@@ -114,7 +116,10 @@ class _MainPageState extends State<MainPage> {
             onNavigate: _openTab,
             onOpenSettings: _openSettings,
           ),
-          WebViewPage(embedded: true),
+          const WebViewPage(
+            embedded: true,
+            bottomContentInset: _bottomNavReservedHeight,
+          ),
           const TerminalTabView(),
         ],
       ),
@@ -125,35 +130,40 @@ class _MainPageState extends State<MainPage> {
     return SafeArea(
       top: false,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
         child: GlassPanel(
-          borderRadius: BorderRadius.circular(28),
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          borderRadius: BorderRadius.circular(24),
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
           opacity: homeController.cardGlassOpacity.value,
           blur: homeController.glassBlurAmount.value * 30,
-          child: NavigationBar(
-            selectedIndex: _currentIndex,
-            onDestinationSelected: _openTab,
-            backgroundColor: Colors.transparent,
-            elevation: 0,
-            height: 64,
-            destinations: const [
-              NavigationDestination(
-                icon: Icon(Icons.smart_toy_outlined),
-                selectedIcon: Icon(Icons.smart_toy),
-                label: '主页',
+          child: MediaQuery.withNoTextScaling(
+            child: NavigationBar(
+              selectedIndex: _currentIndex,
+              onDestinationSelected: _openTab,
+              backgroundColor: Colors.transparent,
+              elevation: 0,
+              height: 46,
+              labelTextStyle: WidgetStateProperty.all(
+                const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
               ),
-              NavigationDestination(
-                icon: Icon(Icons.language_outlined),
-                selectedIcon: Icon(Icons.language),
-                label: 'WebUI',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.terminal_outlined),
-                selectedIcon: Icon(Icons.terminal),
-                label: '终端',
-              ),
-            ],
+              destinations: const [
+                NavigationDestination(
+                  icon: Icon(Icons.smart_toy_outlined, size: 22),
+                  selectedIcon: Icon(Icons.smart_toy, size: 22),
+                  label: '主页',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.language_outlined, size: 22),
+                  selectedIcon: Icon(Icons.language, size: 22),
+                  label: 'WebUI',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.terminal_outlined, size: 22),
+                  selectedIcon: Icon(Icons.terminal, size: 22),
+                  label: '终端',
+                ),
+              ],
+            ),
           ),
         ),
       ),

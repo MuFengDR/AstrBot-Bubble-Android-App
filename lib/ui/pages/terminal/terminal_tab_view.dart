@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
@@ -16,7 +18,12 @@ class TerminalTabView extends StatefulWidget {
 }
 
 class _TerminalTabViewState extends State<TerminalTabView> {
+  static const double _defaultFontSize = 13;
+  static const double _minFontSize = 10;
+  static const double _maxFontSize = 22;
+
   final HomeController homeController = Get.find<HomeController>();
+  double _terminalFontSize = _defaultFontSize;
 
   void _showTopSnack(BuildContext context, String message) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -32,23 +39,252 @@ class _TerminalTabViewState extends State<TerminalTabView> {
     );
   }
 
-  Future<void> _copyActiveTerminalLog(
+  String? _selectedText(TerminalTab tab) {
+    final selection = tab.controller.selection;
+    if (selection == null) return null;
+    final text = tab.terminal.buffer.getText(selection);
+    return text.trim().isEmpty ? null : text;
+  }
+
+  String _fullLogText(TerminalTab tab) {
+    return tab.type == TerminalTabType.fixed
+        ? homeController.startupLogText.trim()
+        : tab.logText.trim();
+  }
+
+  Future<void> _copySelected(
     BuildContext context,
     TerminalTabManager manager,
   ) async {
     final tab = manager.activeTab;
-    final text = tab?.type == TerminalTabType.fixed
-        ? homeController.startupLogText.trim()
-        : (tab?.logText.trim() ?? '');
+    if (tab == null) {
+      _showTopSnack(context, '暂无选中内容');
+      return;
+    }
 
+    final text = _selectedText(tab);
+    if (text == null) {
+      _showTopSnack(context, '暂无选中内容');
+      return;
+    }
+
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!context.mounted) return;
+    _showTopSnack(context, '已复制选中内容');
+  }
+
+  Future<void> _copyAll(
+    BuildContext context,
+    TerminalTabManager manager,
+  ) async {
+    final tab = manager.activeTab;
+    if (tab == null) {
+      _showTopSnack(context, '暂无内容可复制');
+      return;
+    }
+
+    final text = _fullLogText(tab);
     if (text.isEmpty) {
-      _showTopSnack(context, '暂无日志可复制');
+      _showTopSnack(context, '暂无内容可复制');
       return;
     }
 
     await Clipboard.setData(ClipboardData(text: text));
     if (!context.mounted) return;
     _showTopSnack(context, '日志已复制');
+  }
+
+  Future<void> _clearActiveTerminal(
+    BuildContext context,
+    TerminalTabManager manager,
+  ) async {
+    final tab = manager.activeTab;
+    if (tab == null) {
+      _showTopSnack(context, '暂无终端可清空');
+      return;
+    }
+
+    tab.controller.clearSelection();
+    tab.terminal.eraseDisplay();
+    tab.terminal.eraseScrollbackOnly();
+    tab.clearLog();
+    if (tab.type == TerminalTabType.fixed) {
+      homeController.clearStartupLog();
+    }
+    _showTopSnack(context, '终端已清空');
+  }
+
+  Future<void> _exportActiveLog(
+    BuildContext context,
+    TerminalTabManager manager,
+  ) async {
+    final tab = manager.activeTab;
+    if (tab == null) {
+      _showTopSnack(context, '暂无日志可导出');
+      return;
+    }
+
+    final text = _fullLogText(tab);
+    if (text.isEmpty) {
+      _showTopSnack(context, '暂无日志可导出');
+      return;
+    }
+
+    try {
+      final dir = Directory('/storage/emulated/0/Download/AstrBotBubble');
+      await dir.create(recursive: true);
+      final timestamp = DateTime.now()
+          .toIso8601String()
+          .replaceAll(':', '-')
+          .replaceAll('.', '-');
+      final file = File('${dir.path}/terminal-log-$timestamp.txt');
+      await file.writeAsString(text);
+      if (!context.mounted) return;
+      _showTopSnack(context, '已导出: ${file.path}');
+    } catch (e) {
+      if (!context.mounted) return;
+      _showTopSnack(context, '导出失败: $e');
+    }
+  }
+
+  Future<void> _showTerminalMenu(
+    BuildContext context,
+    TerminalTabManager manager,
+  ) async {
+    final tab = manager.activeTab;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final hasSelection = tab == null ? false : _selectedText(tab) != null;
+            return SafeArea(
+              child: MediaQuery.withNoTextScaling(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ListTile(
+                        leading: const Icon(Icons.content_copy),
+                        title: const Text('复制选中'),
+                        enabled: hasSelection,
+                        onTap: hasSelection
+                            ? () {
+                                Navigator.of(context).pop();
+                                _copySelected(context, manager);
+                              }
+                            : null,
+                      ),
+                      ListTile(
+                        leading: const Icon(Icons.copy_all),
+                        title: const Text('复制全部'),
+                        onTap: () {
+                          Navigator.of(context).pop();
+                          _copyAll(context, manager);
+                        },
+                      ),
+                      ListTile(
+                        leading: const Icon(Icons.cleaning_services_outlined),
+                        title: const Text('清空'),
+                        onTap: () {
+                          Navigator.of(context).pop();
+                          _clearActiveTerminal(context, manager);
+                        },
+                      ),
+                      ListTile(
+                        leading: const Icon(Icons.add),
+                        title: const Text('新建终端'),
+                        onTap: () {
+                          Navigator.of(context).pop();
+                          manager.addSystemTerminalTab();
+                        },
+                      ),
+                      const Divider(height: 20),
+                      _buildFontSizeMenuItem(
+                        onChanged: () => setSheetState(() {}),
+                      ),
+                      const Divider(height: 20),
+                      ListTile(
+                        leading: const Icon(Icons.ios_share),
+                        title: const Text('导出 log'),
+                        onTap: () {
+                          Navigator.of(context).pop();
+                          _exportActiveLog(context, manager);
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildFontSizeMenuItem({required VoidCallback onChanged}) {
+    final fontSize = _terminalFontSize.round();
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      child: Row(
+        children: [
+          const Icon(Icons.format_size),
+          const SizedBox(width: 16),
+          const Expanded(
+            child: Text(
+              '调整字体大小',
+              style: TextStyle(fontSize: 16),
+            ),
+          ),
+          IconButton(
+            tooltip: '小',
+            onPressed: _terminalFontSize <= _minFontSize
+                ? null
+                : () {
+                    setState(() {
+                      _terminalFontSize -= 1;
+                    });
+                    onChanged();
+                  },
+            icon: const Icon(Icons.remove),
+          ),
+          SizedBox(
+            width: 44,
+            child: Text(
+              '$fontSize',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ),
+          IconButton(
+            tooltip: '大',
+            onPressed: _terminalFontSize >= _maxFontSize
+                ? null
+                : () {
+                    setState(() {
+                      _terminalFontSize += 1;
+                    });
+                    onChanged();
+                  },
+            icon: const Icon(Icons.add),
+          ),
+          TextButton(
+            onPressed: _terminalFontSize == _defaultFontSize
+                ? null
+                : () {
+                    setState(() {
+                      _terminalFontSize = _defaultFontSize;
+                    });
+                    onChanged();
+                  },
+            child: const Text('默认'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -82,45 +318,42 @@ class _TerminalTabViewState extends State<TerminalTabView> {
     TerminalTabManager manager,
   ) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
       child: GlassPanel(
-        borderRadius: BorderRadius.circular(24),
-        padding: const EdgeInsets.symmetric(horizontal: 8),
+        borderRadius: BorderRadius.circular(18),
+        padding: const EdgeInsets.symmetric(horizontal: 6),
         opacity: homeController.topNavGlassOpacity.value,
         blur: homeController.glassBlurAmount.value * 30,
-        child: SizedBox(
-          height: 52,
-          child: Row(
-            children: [
-              Expanded(
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: tabs.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 8),
-                  itemBuilder: (context, index) {
-                    final tab = tabs[index];
-                    return _buildTabItem(
-                      tab: tab,
-                      isActive: index == activeIndex,
-                      onTap: () => manager.switchToTab(index),
-                      onClose: tab.type == TerminalTabType.system
-                          ? () => _showCloseConfirmDialog(index, manager)
-                          : null,
-                    );
-                  },
+        child: MediaQuery.withNoTextScaling(
+          child: SizedBox(
+            height: 38,
+            child: Row(
+              children: [
+                Expanded(
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: tabs.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 6),
+                    itemBuilder: (context, index) {
+                      final tab = tabs[index];
+                      return _buildTabItem(
+                        tab: tab,
+                        isActive: index == activeIndex,
+                        onTap: () => manager.switchToTab(index),
+                        onClose: tab.type == TerminalTabType.system
+                            ? () => _showCloseConfirmDialog(index, manager)
+                            : null,
+                      );
+                    },
+                  ),
                 ),
-              ),
-              IconButton(
-                icon: const Icon(Icons.copy),
-                onPressed: () => _copyActiveTerminalLog(context, manager),
-                tooltip: '复制当前终端日志',
-              ),
-              IconButton(
-                icon: const Icon(Icons.add),
-                onPressed: () => manager.addSystemTerminalTab(),
-                tooltip: '添加新终端',
-              ),
-            ],
+                IconButton(
+                  icon: const Icon(Icons.more_horiz, size: 22),
+                  onPressed: () => _showTerminalMenu(context, manager),
+                  tooltip: '终端菜单',
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -137,11 +370,11 @@ class _TerminalTabViewState extends State<TerminalTabView> {
         tab.type == TerminalTabType.fixed ? Icons.lock_outline : Icons.terminal;
 
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.symmetric(vertical: 3),
       child: ConstrainedBox(
         constraints: const BoxConstraints(
-          minWidth: 112,
-          maxWidth: 190,
+          minWidth: 104,
+          maxWidth: 176,
         ),
         child: InputChip(
           selected: isActive,
@@ -150,9 +383,9 @@ class _TerminalTabViewState extends State<TerminalTabView> {
             tab.title,
             overflow: TextOverflow.ellipsis,
           ),
-          avatar: Icon(icon, size: 18),
+          avatar: Icon(icon, size: 16),
           deleteIcon:
-              onClose == null ? null : const Icon(Icons.close, size: 18),
+              onClose == null ? null : const Icon(Icons.close, size: 16),
           onDeleted: onClose,
           onSelected: (_) => onTap(),
         ),
@@ -162,11 +395,22 @@ class _TerminalTabViewState extends State<TerminalTabView> {
 
   Widget _buildTerminalContent(TerminalTab tab) {
     return ClipRect(
-      child: TerminalView(
-        tab.terminal,
-        readOnly: tab.type == TerminalTabType.fixed,
-        backgroundOpacity: 1,
-        theme: ManjaroTerminalTheme(),
+      child: Obx(
+        () => DecoratedBox(
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(
+              alpha: homeController.terminalOverlayOpacity.value,
+            ),
+          ),
+          child: TerminalView(
+            tab.terminal,
+            controller: tab.controller,
+            readOnly: tab.type == TerminalTabType.fixed,
+            backgroundOpacity: 0,
+            textStyle: TerminalStyle(fontSize: _terminalFontSize),
+            theme: ManjaroTerminalTheme(),
+          ),
+        ),
       ),
     );
   }

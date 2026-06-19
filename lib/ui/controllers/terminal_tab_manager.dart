@@ -20,6 +20,7 @@ class TerminalTab {
   final String title;
   final TerminalTabType type;
   final Terminal terminal;
+  final TerminalController controller;
   final Pty? pty;
   bool isActive;
   String _logText = '';
@@ -29,6 +30,7 @@ class TerminalTab {
     required this.title,
     required this.type,
     required this.terminal,
+    required this.controller,
     this.pty,
     this.isActive = false,
   });
@@ -44,6 +46,10 @@ class TerminalTab {
     if (_logText.length > _maxLogChars) {
       _logText = _logText.substring(_logText.length - _maxLogChars);
     }
+  }
+
+  void clearLog() {
+    _logText = '';
   }
 }
 
@@ -66,6 +72,7 @@ class TerminalTabManager extends GetxController {
       title: 'main',
       type: TerminalTabType.fixed,
       terminal: terminal,
+      controller: TerminalController(),
       pty: null, // 固定终端使用外部管理的 pseudoTerminal
       isActive: true,
     );
@@ -120,6 +127,7 @@ class TerminalTabManager extends GetxController {
             title: '终端 $newIndex',
             type: TerminalTabType.system,
             terminal: newTerminal,
+            controller: TerminalController(),
             pty: newPty,
             isActive: false,
           );
@@ -184,6 +192,7 @@ class TerminalTabManager extends GetxController {
         title: title,
         type: TerminalTabType.system,
         terminal: newTerminal,
+        controller: TerminalController(),
         pty: newPty,
         isActive: true,
       );
