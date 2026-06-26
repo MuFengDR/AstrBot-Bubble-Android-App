@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:xterm/xterm.dart';
 
 import '../../controllers/terminal_controller.dart';
@@ -131,6 +132,9 @@ class _TerminalTabViewState extends State<TerminalTabView> {
     }
 
     try {
+      final granted = await _ensureStoragePermission(context);
+      if (!granted) return;
+
       final dir = Directory('/storage/emulated/0/Download/AstrBotBubble');
       await dir.create(recursive: true);
       final timestamp = DateTime.now()
@@ -145,6 +149,24 @@ class _TerminalTabViewState extends State<TerminalTabView> {
       if (!context.mounted) return;
       _showTopSnack(context, '导出失败: $e');
     }
+  }
+
+  Future<bool> _ensureStoragePermission(BuildContext context) async {
+    var status = await Permission.manageExternalStorage.status;
+    if (status.isGranted) return true;
+
+    status = await Permission.manageExternalStorage.request();
+    if (status.isGranted) return true;
+
+    var storageStatus = await Permission.storage.status;
+    if (!storageStatus.isGranted) {
+      storageStatus = await Permission.storage.request();
+    }
+    if (storageStatus.isGranted) return true;
+
+    if (!context.mounted) return false;
+    _showTopSnack(context, '需要存储权限才能导出 log');
+    return false;
   }
 
   Future<void> _showTerminalMenu(
