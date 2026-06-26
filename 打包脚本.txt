@@ -1,0 +1,6 @@
+
+// release包
+/S/home/Android/flutter/bin/flutter.bat build apk --release --flavor normal
+
+// 安装
+/S/home/Android/sdk/platform-tools/adb.exe install -r build/app/outputs/flutter-apk/app-normal-release.apk

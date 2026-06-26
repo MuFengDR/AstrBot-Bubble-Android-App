@@ -25,6 +25,8 @@ class _LauncherPageState extends State<LauncherPage>
   final HomeController homeController = Get.find<HomeController>();
   final Map<String, _EnvStepState> _environmentStates = {};
   final Map<String, _NapCatAccountOperation> _napCatBusyOperations = {};
+  final Map<String, BotBindingConfigState> _botBindingStates = {};
+  final Set<String> _botBindingStateLoading = {};
   bool _checkingEnvironment = false;
 
   @override
@@ -33,6 +35,7 @@ class _LauncherPageState extends State<LauncherPage>
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _refreshEnvironmentStatus();
+      _refreshAllBotBindingStates();
     });
   }
 
@@ -46,6 +49,7 @@ class _LauncherPageState extends State<LauncherPage>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _refreshEnvironmentStatus();
+      _refreshAllBotBindingStates();
     }
   }
 
@@ -262,6 +266,8 @@ class _LauncherPageState extends State<LauncherPage>
   Future<bool> _hasAstrBot() async {
     final root = '${scripts.ubuntuPath}/root/AstrBot';
     if (!await Directory(root).exists()) return false;
+    if (!await File('$root/pyproject.toml').exists()) return false;
+    if (!await File('$root/main.py').exists()) return false;
     if (!await Directory('$root/.venv').exists()) return false;
 
     final libDir = Directory('$root/.venv/lib');
@@ -443,7 +449,7 @@ class _LauncherPageState extends State<LauncherPage>
 
             return Column(
               children: instances
-                  .map((instance) => _buildNapCatAccountTile(instance))
+                  .map((instance) => _buildNapCatAccountTileV2(instance))
                   .toList(),
             );
           }),
@@ -452,7 +458,7 @@ class _LauncherPageState extends State<LauncherPage>
     );
   }
 
-  Widget _buildNapCatAccountTile(Map<String, dynamic> instance) {
+  Widget _buildNapCatAccountTileV2(Map<String, dynamic> instance) {
     final id = instance['id']?.toString() ?? '';
     final running = instance['running'] == true;
     final operation = _napCatBusyOperations[id];
@@ -461,89 +467,151 @@ class _LauncherPageState extends State<LauncherPage>
     final name = instance['name']?.toString() ?? '账号';
     final qq = instance['qq']?.toString() ?? '';
     final port = instance['webUiPort']?.toString() ?? '';
+    final canBindBot = qq.trim().isNotEmpty;
+    if (running && canBindBot) {
+      _ensureBotBindingState(instance);
+    }
+    final hasBoundAdapter =
+        (instance['boundAdapterId']?.toString() ?? '').trim().isNotEmpty;
+    final bindingState = running && canBindBot
+        ? (_botBindingStates[id] ??
+            (hasBoundAdapter
+                ? BotBindingConfigState.configured
+                : BotBindingConfigState.unconfigured))
+        : BotBindingConfigState.unconfigured;
 
     return AnimatedOpacity(
       duration: const Duration(milliseconds: 160),
       opacity: deleting ? 0.55 : 1,
       child: AbsorbPointer(
         absorbing: busy,
-        child: ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: Icon(
-            running ? Icons.play_circle : Icons.pause_circle_outline,
-            color: running ? Colors.green : null,
-          ),
-          title: Text(name),
-          subtitle: Text(
-            deleting
-                ? '删除中...\n正在清理登录态和实例目录'
-                : 'QQ：${qq.isEmpty ? '未绑定，启动后扫码登录' : qq}\n'
-                    'WebUI：$port',
-          ),
-          isThreeLine: true,
-          trailing: Wrap(
-            spacing: 4,
-            crossAxisAlignment: WrapCrossAlignment.center,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              IconButton(
-                tooltip: '打开 WebUI',
-                onPressed: () => _openNapCatWebUi(instance),
-                icon: const Icon(Icons.language),
-              ),
-              IconButton(
-                tooltip: busy
-                    ? operation.label
-                    : running
-                        ? '停止'
-                        : '启动',
-                onPressed: () => _toggleNapCatInstance(instance),
-                icon: busy
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Icon(running ? Icons.stop : Icons.play_arrow),
-              ),
-              PopupMenuButton<String>(
-                tooltip: '更多',
-                icon: const Icon(Icons.more_vert),
-                onSelected: (value) async {
-                  switch (value) {
-                    case 'edit':
-                      await _showEditNapCatAccountDialog(instance);
-                      break;
-                    case 'copyToken':
-                      await _copyNapCatToken(instance);
-                      break;
-                    case 'copyUrl':
-                      await _copyNapCatWebUiUrl(instance);
-                      break;
-                    case 'logout':
-                      await _confirmLogoutNapCatAccount(instance);
-                      break;
-                    case 'delete':
-                      await _confirmDeleteNapCatAccount(instance);
-                      break;
-                  }
-                },
-                itemBuilder: (context) {
-                  final token = instance['token']?.toString() ?? '';
-                  return [
-                    const PopupMenuItem(value: 'edit', child: Text('编辑')),
-                    PopupMenuItem(
-                      value: 'copyToken',
-                      enabled: token.isNotEmpty,
-                      child: const Text('复制 token'),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Icon(
+                    running ? Icons.play_circle : Icons.pause_circle_outline,
+                    color: running ? Colors.green : null,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Flexible(
+                              child: Text(
+                                name,
+                                style: Theme.of(context).textTheme.titleSmall,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            _buildBotBindingStatusChip(
+                              running ? bindingState : null,
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          deleting
+                              ? '删除中...\n正在清理登录态和实例目录'
+                              : 'QQ ${qq.isEmpty ? '未绑定，启动后扫码登录' : qq}\nWebUI $port',
+                          softWrap: true,
+                        ),
+                      ],
                     ),
-                    const PopupMenuItem(
-                      value: 'copyUrl',
-                      child: Text('复制完整链接'),
-                    ),
-                    const PopupMenuItem(value: 'logout', child: Text('退出登录')),
-                    const PopupMenuItem(value: 'delete', child: Text('删除')),
-                  ];
-                },
+                  ),
+                  Wrap(
+                    spacing: 4,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      IconButton(
+                        tooltip: '打开 WebUI',
+                        onPressed: () => _openNapCatWebUi(instance),
+                        icon: const Icon(Icons.language),
+                      ),
+                      IconButton(
+                        tooltip: busy
+                            ? operation.label
+                            : running
+                                ? '停止'
+                                : '启动',
+                        onPressed: () => _toggleNapCatInstance(instance),
+                        icon: busy
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : Icon(running ? Icons.stop : Icons.play_arrow),
+                      ),
+                      PopupMenuButton<String>(
+                        tooltip: '更多',
+                        icon: const Icon(Icons.more_vert),
+                        onSelected: (value) async {
+                          switch (value) {
+                            case 'edit':
+                              await _showEditNapCatAccountDialog(instance);
+                              break;
+                            case 'copyToken':
+                              await _copyNapCatToken(instance);
+                              break;
+                            case 'copyUrl':
+                              await _copyNapCatWebUiUrl(instance);
+                              break;
+                            case 'bindBot':
+                              if (canBindBot) {
+                                await _showBindBotDialog(instance);
+                              } else {
+                                _showSnack('登录 QQ 后可绑定 BOT');
+                              }
+                              break;
+                            case 'logout':
+                              await _confirmLogoutNapCatAccount(instance);
+                              break;
+                            case 'delete':
+                              await _confirmDeleteNapCatAccount(instance);
+                              break;
+                          }
+                        },
+                        itemBuilder: (context) {
+                          final token = instance['token']?.toString() ?? '';
+                          return [
+                            const PopupMenuItem(value: 'edit', child: Text('编辑')),
+                            PopupMenuItem(
+                              value: 'bindBot',
+                              enabled: canBindBot,
+                              child: Text(
+                                bindingState == BotBindingConfigState.configured
+                                    ? '管理 BOT 绑定'
+                                    : '绑定 BOT',
+                              ),
+                            ),
+                            PopupMenuItem(
+                              value: 'copyToken',
+                              enabled: token.isNotEmpty,
+                              child: const Text('复制 token'),
+                            ),
+                            const PopupMenuItem(
+                              value: 'copyUrl',
+                              child: Text('复制完整链接'),
+                            ),
+                            const PopupMenuItem(value: 'logout', child: Text('退出登录')),
+                            const PopupMenuItem(value: 'delete', child: Text('删除')),
+                          ];
+                        },
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ],
           ),
@@ -557,6 +625,503 @@ class _LauncherPageState extends State<LauncherPage>
     if (id.isEmpty) return;
     homeController.requestOpenNapCatWebUi(id);
     widget.onNavigate?.call(1);
+  }
+
+  Widget _buildBotBindingStatusChip(BotBindingConfigState? state) {
+    final color = switch (state) {
+      BotBindingConfigState.configured => Colors.green,
+      BotBindingConfigState.mismatch => Colors.orange,
+      BotBindingConfigState.unconfigured => Colors.red,
+      null => Colors.grey,
+    };
+    final text = switch (state) {
+      BotBindingConfigState.configured => '已绑定BOT',
+      BotBindingConfigState.mismatch => 'BOT绑定异常',
+      BotBindingConfigState.unconfigured => '未绑定BOT',
+      null => '未运行',
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.22)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.circle, size: 9, color: color),
+          const SizedBox(width: 5),
+          Text(
+            text,
+            style: TextStyle(
+              color: color,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _ensureBotBindingState(Map<String, dynamic> instance) {
+    final id = instance['id']?.toString() ?? '';
+    if (id.isEmpty ||
+        _botBindingStates.containsKey(id) ||
+        _botBindingStateLoading.contains(id)) {
+      return;
+    }
+    _refreshBotBindingState(instance);
+  }
+
+  void _refreshAllBotBindingStates() {
+    for (final instance in homeController.napCatInstances) {
+      final qq = instance['qq']?.toString().trim() ?? '';
+      if (qq.isNotEmpty && instance['running'] == true) {
+        _refreshBotBindingState(instance, force: true);
+      }
+    }
+  }
+
+  Future<void> _refreshBotBindingState(
+    Map<String, dynamic> instance, {
+    bool force = false,
+  }) async {
+    final id = instance['id']?.toString() ?? '';
+    if (id.isEmpty) return;
+    if (_botBindingStateLoading.contains(id)) {
+      if (!force) return;
+      _botBindingStateLoading.remove(id);
+    }
+    _botBindingStateLoading.add(id);
+    try {
+      final data = await _loadBotBindingData(instance);
+      if (!mounted) return;
+      setState(() {
+        _botBindingStates[id] = data.state;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _botBindingStates[id] = BotBindingConfigState.unconfigured;
+      });
+    } finally {
+      _botBindingStateLoading.remove(id);
+    }
+  }
+
+  Future<_BotBindingData> _loadBotBindingData(
+    Map<String, dynamic> instance,
+  ) async {
+    final id = instance['id']?.toString() ?? '';
+    final current = homeController.napCatInstances.firstWhereOrNull(
+          (item) => item['id']?.toString() == id,
+        ) ??
+        instance;
+    final clients = await homeController.listNapCatWebSocketClients(id);
+    final adapters = await homeController.listAstrBotOneBotAdapters();
+    final selectedClient = await homeController.selectedNapCatWebSocketClient(
+      current,
+    );
+    final selectedAdapter = await homeController.selectedAstrBotAdapter(
+      current,
+    );
+    return _BotBindingData(
+      instance: current,
+      clients: clients,
+      adapters: adapters,
+      selectedClient: selectedClient,
+      selectedAdapter: selectedAdapter,
+      state: homeController.compareBotBinding(selectedClient, selectedAdapter),
+    );
+  }
+
+  Future<void> _showBindBotDialog(Map<String, dynamic> instance) async {
+    final qq = instance['qq']?.toString().trim() ?? '';
+    if (qq.isEmpty) {
+      _showSnack('登录 QQ 后可绑定 BOT');
+      return;
+    }
+    var refresh = 0;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: const Text('绑定BOT'),
+            content: SizedBox(
+              width: 520,
+              child: FutureBuilder<_BotBindingData>(
+                key: ValueKey(refresh),
+                future: _loadBotBindingData(instance),
+                builder: (context, snapshot) {
+                  if (!snapshot.hasData) {
+                    return const SizedBox(
+                      height: 160,
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  final data = snapshot.data!;
+                  return SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _buildBindingStatusBanner(data.state),
+                        if (data.state == BotBindingConfigState.mismatch) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            '当前 BOT 配置与 websocket 不一致，可修复绑定。',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                          const SizedBox(height: 8),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: FilledButton.icon(
+                              onPressed: data.selectedClient == null ||
+                                      data.selectedAdapter == null
+                                  ? null
+                                  : () async {
+                                      final repaired =
+                                          await _repairBotBinding(data);
+                                      if (repaired == true) {
+                                        setDialogState(() => refresh++);
+                                      }
+                                    },
+                              icon: const Icon(Icons.build),
+                              label: const Text('修复绑定'),
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 12),
+                        Text(
+                          'websocket适配器',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        const SizedBox(height: 4),
+                        if (data.clients.isEmpty)
+                          const Text('未找到 websocket client 配置')
+                        else
+                          ...data.clients.map(
+                            (client) => RadioListTile<String>(
+                              dense: true,
+                              value: client.name,
+                              groupValue: data.selectedClient?.name,
+                              onChanged: (_) async {
+                                try {
+                                  await homeController.bindNapCatWebSocketClient(
+                                    id: data.instance['id']?.toString() ?? '',
+                                    clientName: client.name,
+                                  );
+                                  setDialogState(() => refresh++);
+                                } catch (e) {
+                                  _showSnack('绑定 websocket 失败：$e');
+                                }
+                              },
+                              title: Text(client.name),
+                              subtitle: Text(
+                                '${client.enabled ? '已启用' : '未启用'} · ${client.url}',
+                              ),
+                            ),
+                          ),
+                        const Divider(height: 24),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                'AstrBot适配器',
+                                style: Theme.of(context).textTheme.titleSmall,
+                              ),
+                            ),
+                            TextButton.icon(
+                              onPressed: data.selectedClient == null
+                                  ? null
+                                  : () async {
+                                      final created =
+                                          await _createAstrBotAdapter(data);
+                                      if (created == true) {
+                                        setDialogState(() => refresh++);
+                                      }
+                                    },
+                              icon: const Icon(Icons.add),
+                              label: const Text('新建'),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        if (data.adapters.isEmpty)
+                          const Text('未找到 AstrBot OneBot 适配器')
+                        else
+                          ...data.adapters.map(
+                            (adapter) => RadioListTile<String>(
+                              dense: true,
+                              value: adapter.id,
+                              groupValue: data.selectedAdapter?.id,
+                              onChanged: (_) async {
+                                final changed = await _bindAstrBotAdapter(
+                                  data,
+                                  adapter,
+                                );
+                                if (changed == true) {
+                                  setDialogState(() => refresh++);
+                                }
+                              },
+                              title: Text(adapter.id),
+                              subtitle: Text(
+                                '${adapter.enabled ? '已启用' : '未启用'} · ${adapter.port} · token ${adapter.token.isEmpty ? '空' : '已设置'}',
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('关闭'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    await _refreshBotBindingState(instance, force: true);
+  }
+
+  Widget _buildBindingStatusBanner(BotBindingConfigState state) {
+    final color = switch (state) {
+      BotBindingConfigState.configured => Colors.green,
+      BotBindingConfigState.mismatch => Colors.orange,
+      BotBindingConfigState.unconfigured => Colors.red,
+    };
+    final text = switch (state) {
+      BotBindingConfigState.configured => '已绑定BOT',
+      BotBindingConfigState.mismatch => 'BOT绑定异常',
+      BotBindingConfigState.unconfigured => '未绑定BOT',
+    };
+    return Row(
+      children: [
+        Icon(Icons.circle, size: 12, color: color),
+        const SizedBox(width: 8),
+        Text(text, style: TextStyle(color: color)),
+      ],
+    );
+  }
+
+  Future<bool?> _bindAstrBotAdapter(
+    _BotBindingData data,
+    AstrBotOneBotAdapter adapter,
+  ) async {
+    final id = data.instance['id']?.toString() ?? '';
+    final client = data.selectedClient;
+    if (id.isEmpty || client == null) {
+      _showSnack('请先绑定 websocket 适配器');
+      return false;
+    }
+
+    var invalidatePrevious = false;
+    final currentAdapterId = data.instance['boundAdapterId']?.toString() ?? '';
+    if (currentAdapterId.isNotEmpty && currentAdapterId != adapter.id) {
+      final confirmed = await _confirm(
+        title: '换绑适配器',
+        content: _withAstrBotRestartNotice(
+          '当前账号已经绑定 $currentAdapterId，是否换绑到 ${adapter.id}？',
+        ),
+        confirmText: '换绑',
+      );
+      if (confirmed != true) return false;
+      invalidatePrevious = true;
+    }
+
+    final mismatch = client.port != adapter.port || client.token != adapter.token;
+    if (mismatch &&
+        homeController.isAstrBotAdapterBoundByOther(adapter.id, id)) {
+      final confirmed = await _confirm(
+        title: '适配器已被绑定',
+        content: _withAstrBotRestartNotice(
+          '${adapter.id} 已被其他 NapCat 账号绑定，是否按当前 websocket 配置覆盖并换绑？',
+        ),
+        confirmText: '覆盖换绑',
+      );
+      if (confirmed != true) return false;
+    }
+
+    if (mismatch) {
+      final confirmed = await _confirm(
+        title: '配置不一致',
+        content: _withAstrBotRestartNotice(
+          '该 AstrBot 适配器与当前 websocket 的端口或 token 不一致，是否自动修改 AstrBot 适配器？',
+        ),
+        confirmText: '自动修改',
+      );
+      if (confirmed != true) return false;
+    }
+
+    try {
+      await homeController.bindAstrBotAdapter(
+        id: id,
+        adapterId: adapter.id,
+        updateAdapterFromWebSocket: mismatch,
+        invalidatePreviousAdapter: invalidatePrevious,
+      );
+      if (mismatch || invalidatePrevious) {
+        await _restartAstrBotIfRunningAfterAdapterChange();
+      }
+      return true;
+    } catch (e) {
+      _showSnack('绑定 AstrBot 适配器失败：$e');
+      return false;
+    }
+  }
+
+  Future<bool?> _repairBotBinding(_BotBindingData data) async {
+    final id = data.instance['id']?.toString() ?? '';
+    final adapter = data.selectedAdapter;
+    if (id.isEmpty || data.selectedClient == null || adapter == null) {
+      _showSnack('请先选择 websocket 和 AstrBot 适配器');
+      return false;
+    }
+    final confirmed = await _confirm(
+      title: '修复绑定',
+      content: _withAstrBotRestartNotice(
+        '是否将当前 AstrBot 适配器同步为所选 websocket 的端口和 token？',
+      ),
+      confirmText: '修复绑定',
+    );
+    if (confirmed != true) return false;
+
+    try {
+      await homeController.bindAstrBotAdapter(
+        id: id,
+        adapterId: adapter.id,
+        updateAdapterFromWebSocket: true,
+      );
+      await _restartAstrBotIfRunningAfterAdapterChange();
+      _showSnack('BOT 绑定已修复');
+      return true;
+    } catch (e) {
+      _showSnack('修复 BOT 绑定失败：$e');
+      return false;
+    }
+  }
+
+  Future<bool?> _createAstrBotAdapter(_BotBindingData data) async {
+    final id = data.instance['id']?.toString() ?? '';
+    final controller = TextEditingController(
+      text: data.instance['name']?.toString() ?? '',
+    );
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('新建 AstrBot 适配器'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: controller,
+              decoration: const InputDecoration(
+                labelText: 'BOT名称',
+                hintText: '留空使用 NapCat 卡片名称',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              _newAstrBotAdapterNotice,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('新建'),
+          ),
+        ],
+      ),
+    );
+    final name = controller.text.trim();
+    controller.dispose();
+    if (confirmed != true) return false;
+    final oldAdapterId = data.instance['boundAdapterId']?.toString() ?? '';
+    var allowSharedPreviousAdapter = false;
+    if (oldAdapterId.isNotEmpty &&
+        homeController.isAstrBotAdapterBoundByOther(oldAdapterId, id)) {
+      final continueCreate = await _confirm(
+        title: '旧适配器被复用',
+        content: _withAstrBotRestartNotice(
+          '旧 AstrBot 适配器 $oldAdapterId 已被其他 NapCat 账号绑定，继续新建不会无效化旧适配器，可能导致端口冲突。是否继续？',
+        ),
+        confirmText: '继续新建',
+      );
+      if (continueCreate != true) return false;
+      allowSharedPreviousAdapter = true;
+    }
+    try {
+      await homeController.createAstrBotAdapterForNapCat(
+        id: id,
+        preferredName: name,
+        allowSharedPreviousAdapter: allowSharedPreviousAdapter,
+      );
+      await _restartAstrBotIfRunningAfterAdapterChange();
+      return true;
+    } catch (e) {
+      _showSnack('新建 AstrBot 适配器失败：$e');
+      return false;
+    }
+  }
+
+  static const String _astrBotRestartNotice = '修改后，已运行的 AstrBot 会重启。';
+  static const String _newAstrBotAdapterNotice =
+      '新建后会自动绑定，已运行的 AstrBot 会重启。';
+
+  String _withAstrBotRestartNotice(String content) {
+    return '$content\n\n$_astrBotRestartNotice';
+  }
+
+  Future<void> _restartAstrBotIfRunningAfterAdapterChange() async {
+    if (!homeController.isAstrBotRunning.value) return;
+    try {
+      _showSnack('AstrBot 配置已保存，正在重启...');
+      await homeController.stopAstrBot();
+      await Future.delayed(const Duration(milliseconds: 300));
+      await homeController.loadAstrBot();
+    } catch (e) {
+      _showSnack('配置已保存，但 AstrBot 重启失败：$e');
+    }
+  }
+
+  Future<bool?> _confirm({
+    required String title,
+    required String content,
+    required String confirmText,
+  }) {
+    return showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(content),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text(confirmText),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _copyNapCatToken(Map<String, dynamic> instance) async {
@@ -930,6 +1495,24 @@ enum _NapCatAccountOperation {
   stopping,
   deleting,
   loggingOut,
+}
+
+class _BotBindingData {
+  final Map<String, dynamic> instance;
+  final List<NapCatWebSocketClient> clients;
+  final List<AstrBotOneBotAdapter> adapters;
+  final NapCatWebSocketClient? selectedClient;
+  final AstrBotOneBotAdapter? selectedAdapter;
+  final BotBindingConfigState state;
+
+  const _BotBindingData({
+    required this.instance,
+    required this.clients,
+    required this.adapters,
+    required this.selectedClient,
+    required this.selectedAdapter,
+    required this.state,
+  });
 }
 
 extension _NapCatAccountOperationLabel on _NapCatAccountOperation {

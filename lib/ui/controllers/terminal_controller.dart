@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:get/get.dart';
 import 'package:global_repository/global_repository.dart';
@@ -20,9 +21,18 @@ import 'terminal_tab_manager.dart';
 
 class NapCatInstanceDefaults {
   static const String storageKey = 'napcat_instances';
+  static const String legacyBindingMigrationKey =
+      'napcat_legacy_binding_migration_v2';
   static const int firstExtraWebUiPort = 6099;
   static const int lastExtraWebUiPort = 6149;
   static const int firstExtraDisplay = 22;
+  static const int firstOneBotPort = 6199;
+  static const int lastOneBotPort = 6249;
+  static const String defaultWebSocketClientName = 'WsClient';
+  static const String defaultOneBotToken =
+      'kasdkfljsadhlskdjhasdlkfshdlafksjdhf';
+  static const int invalidOneBotPort = 6250;
+  static const String invalidOneBotToken = 'invalid';
 }
 
 const int _napCatQrExpireSeconds = 120;
@@ -34,6 +44,46 @@ class _NapCatQrDialogState {
   bool closed = false;
 
   _NapCatQrDialogState({required this.secondsLeft});
+}
+
+class NapCatWebSocketClient {
+  final int index;
+  final String name;
+  final bool enabled;
+  final String url;
+  final String token;
+  final int? port;
+
+  const NapCatWebSocketClient({
+    required this.index,
+    required this.name,
+    required this.enabled,
+    required this.url,
+    required this.token,
+    required this.port,
+  });
+}
+
+class AstrBotOneBotAdapter {
+  final int index;
+  final String id;
+  final bool enabled;
+  final int port;
+  final String token;
+
+  const AstrBotOneBotAdapter({
+    required this.index,
+    required this.id,
+    required this.enabled,
+    required this.port,
+    required this.token,
+  });
+}
+
+enum BotBindingConfigState {
+  unconfigured,
+  configured,
+  mismatch,
 }
 
 class HomeController extends GetxController {
@@ -72,15 +122,7 @@ class HomeController extends GetxController {
   StreamSubscription? _qrcodeSubscription;
   StreamSubscription? _webviewSubscription; // 添加webview监听订阅
 
-  late Terminal terminal = Terminal(
-    maxLines: 10000,
-    onResize: (width, height, pixelWidth, pixelHeight) {
-      pseudoTerminal?.resize(height, width);
-    },
-    onOutput: (data) {
-      pseudoTerminal?.writeString(data);
-    },
-  );
+  late Terminal terminal = _createMainTerminal();
   bool webviewHasOpen = false;
   bool _isLocalhostDetected = false; // AstrBot dashboard 端口检测标志
   bool _isQrcodeProcessed = false; // 二维码处理完成标志
@@ -90,6 +132,26 @@ class HomeController extends GetxController {
   String _startupLogText = '';
   String _terminalWriteBuffer = '';
   Timer? _terminalWriteTimer;
+
+  Terminal _createMainTerminal() {
+    return Terminal(
+      maxLines: 10000,
+      onResize: (width, height, pixelWidth, pixelHeight) {
+        pseudoTerminal?.resize(height, width);
+      },
+      onOutput: (data) {
+        pseudoTerminal?.writeString(data);
+      },
+    );
+  }
+
+  void _resetMainTerminal() {
+    _terminalWriteTimer?.cancel();
+    _terminalWriteTimer = null;
+    _terminalWriteBuffer = '';
+    terminal = _createMainTerminal();
+    terminalTabManager.initializeFixedTab(terminal);
+  }
 
   String get startupLogText => _startupLogText;
 
@@ -258,7 +320,7 @@ class HomeController extends GetxController {
         // 不取消订阅，继续监听以便终端日志持续更新
       }
 
-      terminal.write(event);
+      _writeTerminal(event);
     }, onDone: () {
       isAstrBotStarting.value = false;
       isAstrBotRunning.value = false;
@@ -312,7 +374,7 @@ class HomeController extends GetxController {
       // 输出到 Flutter 控制台
       // Output to Flutter console
       if (event.trim().isNotEmpty) {
-        terminal.write(event);
+        _writeTerminal(event);
 
         // 按行分割输出，避免控制台输出混乱
         final lines = event.split('\n');
@@ -575,6 +637,9 @@ class HomeController extends GetxController {
     _startupLogText = '';
     _webviewSubscription?.cancel();
     _qrcodeSubscription?.cancel();
+    pseudoTerminal?.kill();
+    pseudoTerminal = null;
+    _resetMainTerminal();
     update();
 
     try {
@@ -589,8 +654,10 @@ class HomeController extends GetxController {
       createBusyboxLink();
 
       // 创建终端
-      pseudoTerminal =
-          createPTY(rows: terminal.viewHeight, columns: terminal.viewWidth);
+      pseudoTerminal = createPTY(
+        rows: max(terminal.viewHeight, 24),
+        columns: max(terminal.viewWidth, 80),
+      );
       napcatTerminal = null;
 
       setProgress('准备启动 AstrBot...');
@@ -608,7 +675,6 @@ class HomeController extends GetxController {
       bumpProgress();
 
       startAstrBot(pseudoTerminal!);
-      terminalTabManager.initializeFixedTab(terminal);
     } catch (e) {
       isAstrBotStarting.value = false;
       isAstrBotRunning.value = false;
@@ -922,6 +988,7 @@ class HomeController extends GetxController {
         .whereType<Map>()
         .map((e) => _normalizeNapCatInstance(Map<String, dynamic>.from(e)))
         .toList();
+    unawaited(_migrateLegacyBotBindingsOnce());
   }
 
   void _loadHiddenWebUiTargetIds() {
@@ -938,21 +1005,7 @@ class HomeController extends GetxController {
 
   String _defaultNapCatName(int index) => '账号$index';
 
-  int _nextNapCatAccountIndex() {
-    final used = <int>{};
-    for (final instance in napCatInstances) {
-      final match = RegExp(r'^账号(\d+)$').firstMatch(
-        instance['name']?.toString() ?? '',
-      );
-      final value = int.tryParse(match?.group(1) ?? '');
-      if (value != null) used.add(value);
-    }
-    var index = 1;
-    while (used.contains(index)) {
-      index++;
-    }
-    return index;
-  }
+  int _nextNapCatAccountIndex() => napCatInstances.length + 1;
 
   Map<String, dynamic> _normalizeNapCatInstance(Map<String, dynamic> instance) {
     final id = instance['id']?.toString().trim().isNotEmpty == true
@@ -980,6 +1033,8 @@ class HomeController extends GetxController {
       'autoLogin': autoLogin,
       'autoLoginTouched': instance['autoLoginTouched'] == true,
       'qqAutoDetected': instance['qqAutoDetected'] == true,
+      'boundWebSocketName': instance['boundWebSocketName']?.toString() ?? '',
+      'boundAdapterId': instance['boundAdapterId']?.toString() ?? '',
       'running': _napCatInstanceTerminals.containsKey(id),
     };
   }
@@ -1004,9 +1059,88 @@ class HomeController extends GetxController {
                 'autoLogin': instance['autoLogin'] ?? false,
                 'autoLoginTouched': instance['autoLoginTouched'] ?? false,
                 'qqAutoDetected': instance['qqAutoDetected'] ?? false,
+                'boundWebSocketName': instance['boundWebSocketName'] ?? '',
+                'boundAdapterId': instance['boundAdapterId'] ?? '',
               })
           .toList(),
     );
+  }
+
+  Future<void> _migrateLegacyBotBindingsOnce() async {
+    if (box!.get(NapCatInstanceDefaults.legacyBindingMigrationKey) == true) {
+      return;
+    }
+    if (napCatInstances.isEmpty) {
+      box!.put(NapCatInstanceDefaults.legacyBindingMigrationKey, true);
+      return;
+    }
+
+    final adapters = await listAstrBotOneBotAdapters();
+    var inspectedNapCatConfig = false;
+    var migrated = false;
+
+    for (final instance in List<Map<String, dynamic>>.from(napCatInstances)) {
+      final id = instance['id']?.toString() ?? '';
+      if (id.isEmpty) continue;
+
+      final boundAdapterId = instance['boundAdapterId']?.toString() ?? '';
+      final boundWebSocketName =
+          instance['boundWebSocketName']?.toString() ?? '';
+
+      final clients = await listNapCatWebSocketClients(id);
+      if (clients.isEmpty) continue;
+      inspectedNapCatConfig = true;
+
+      final selectedClient = clients.firstWhereOrNull(
+        (client) => client.name == boundWebSocketName,
+      );
+      final selectedAdapter = adapters.firstWhereOrNull(
+        (adapter) => adapter.id == boundAdapterId,
+      );
+      if (compareBotBinding(selectedClient, selectedAdapter) ==
+          BotBindingConfigState.configured) {
+        continue;
+      }
+
+      var matchedClient = selectedClient;
+      var matchedAdapter = matchedClient == null
+          ? null
+          : adapters.firstWhereOrNull(
+              (adapter) =>
+                  matchedClient?.port != null &&
+                  adapter.port == matchedClient?.port &&
+                  adapter.token == matchedClient?.token,
+            );
+      if (matchedAdapter == null) {
+        for (final client in clients) {
+          matchedAdapter = adapters.firstWhereOrNull(
+            (adapter) =>
+                client.port != null &&
+                adapter.port == client.port &&
+                adapter.token == client.token,
+          );
+          if (matchedAdapter != null) {
+            matchedClient = client;
+            break;
+          }
+        }
+      }
+      if (matchedClient == null || matchedAdapter == null) continue;
+      _updateNapCatInstance(id, {
+        if (boundWebSocketName != matchedClient.name)
+          'boundWebSocketName': matchedClient.name,
+        if (boundAdapterId != matchedAdapter.id)
+          'boundAdapterId': matchedAdapter.id,
+      });
+      migrated = true;
+    }
+
+    if (inspectedNapCatConfig && adapters.isNotEmpty) {
+      box!.put(NapCatInstanceDefaults.legacyBindingMigrationKey, true);
+      if (migrated) {
+        Log.i('已自动迁移旧版 NapCat / AstrBot 绑定关系', tag: 'AstrBot');
+      }
+    }
   }
 
   int _findInstanceIndex(String id) {
@@ -1033,6 +1167,418 @@ class HomeController extends GetxController {
     } finally {
       await socket?.close();
     }
+  }
+
+  File _napCatOneBotTemplateConfigFile(String id) =>
+      File('$ubuntuPath/root/napcat_instances/${id}_napcat/config/onebot11.json');
+
+  String _napCatInstanceQq(String id) {
+    final instance =
+        napCatInstances.firstWhereOrNull((item) => item['id'] == id);
+    return instance?['qq']?.toString().trim() ?? '';
+  }
+
+  File? _napCatOneBotAccountConfigFile(String id) {
+    final qq = _napCatInstanceQq(id);
+    if (qq.isEmpty) return null;
+    return File(
+      '$ubuntuPath/root/napcat_instances/${id}_napcat/config/onebot11_$qq.json',
+    );
+  }
+
+  Future<Map<String, dynamic>?> _readActiveNapCatOneBotConfig(String id) async {
+    final file = _napCatOneBotAccountConfigFile(id);
+    if (file == null) return null;
+    return _readJsonMap(file);
+  }
+
+  Future<Map<String, dynamic>?> _readNapCatOneBotConfigForPortScan(
+    String id,
+  ) async {
+    final accountFile = _napCatOneBotAccountConfigFile(id);
+    if (accountFile != null && await accountFile.exists()) {
+      return _readJsonMap(accountFile);
+    }
+    return _readJsonMap(_napCatOneBotTemplateConfigFile(id));
+  }
+
+  List<File> get _astrBotConfigFiles => [
+        File('$ubuntuPath/root/AstrBot/data/cmd_config.json'),
+        File('${RuntimeEnvir.homePath}/cmd_config.json'),
+      ];
+
+  Future<Map<String, dynamic>?> _readJsonMap(File file) async {
+    if (!await file.exists()) return null;
+    try {
+      final data = jsonDecode(await file.readAsString());
+      return data is Map<String, dynamic> ? data : null;
+    } catch (e) {
+      Log.e('读取 JSON 失败: ${file.path}, $e', tag: 'AstrBot');
+      return null;
+    }
+  }
+
+  Future<void> _writeJsonMap(File file, Map<String, dynamic> data) async {
+    await file.parent.create(recursive: true);
+    await file.writeAsString(
+      const JsonEncoder.withIndent('  ').convert(data),
+    );
+  }
+
+  int? _extractWsPort(String url) {
+    final match = RegExp(r'^wss?://[^/:]+:(\d+)/?.*$', caseSensitive: false)
+        .firstMatch(url.trim());
+    return int.tryParse(match?.group(1) ?? '');
+  }
+
+  String _oneBotWsUrl(int port) => 'ws://localhost:$port/ws';
+
+  Map<String, dynamic> _buildDefaultNapCatOneBotConfig(int port) => {
+        'network': {
+          'httpServers': [],
+          'httpClients': [],
+          'websocketServers': [],
+          'websocketClients': [
+            {
+              'name': NapCatInstanceDefaults.defaultWebSocketClientName,
+              'enable': true,
+              'url': _oneBotWsUrl(port),
+              'messagePostFormat': 'array',
+              'reportSelfMessage': false,
+              'reconnectInterval': 5000,
+              'token': NapCatInstanceDefaults.defaultOneBotToken,
+              'debug': false,
+              'heartInterval': 30000,
+            }
+          ],
+        },
+        'musicSignUrl': '',
+        'enableLocalFile2Url': false,
+        'parseMultMsg': false,
+      };
+
+  List<dynamic> _webSocketClientList(Map<String, dynamic> config) {
+    final network = config['network'];
+    if (network is! Map<String, dynamic>) return <dynamic>[];
+    final clients = network['websocketClients'];
+    if (clients is List) return clients;
+    network['websocketClients'] = <dynamic>[];
+    return network['websocketClients'] as List<dynamic>;
+  }
+
+  Future<List<NapCatWebSocketClient>> listNapCatWebSocketClients(
+    String id,
+  ) async {
+    final config = await _readActiveNapCatOneBotConfig(id);
+    if (config == null) return const [];
+    final clients = _webSocketClientList(config);
+    final result = <NapCatWebSocketClient>[];
+    for (var i = 0; i < clients.length; i++) {
+      final client = clients[i];
+      if (client is! Map) continue;
+      final data = Map<String, dynamic>.from(client);
+      final name = data['name']?.toString().trim().isNotEmpty == true
+          ? data['name'].toString()
+          : 'websocket ${i + 1}';
+      final url = data['url']?.toString() ?? '';
+      result.add(
+        NapCatWebSocketClient(
+          index: i,
+          name: name,
+          enabled: data['enable'] != false,
+          url: url,
+          token: data['token']?.toString() ?? '',
+          port: _extractWsPort(url),
+        ),
+      );
+    }
+    return result;
+  }
+
+  Future<List<AstrBotOneBotAdapter>> listAstrBotOneBotAdapters() async {
+    final config = await _readAstrBotConfig();
+    if (config == null) return const [];
+    final platforms = config['platform'];
+    if (platforms is! List) return const [];
+    final result = <AstrBotOneBotAdapter>[];
+    for (var i = 0; i < platforms.length; i++) {
+      final item = platforms[i];
+      if (item is! Map) continue;
+      final data = Map<String, dynamic>.from(item);
+      if (data['type']?.toString() != 'aiocqhttp') continue;
+      result.add(
+        AstrBotOneBotAdapter(
+          index: i,
+          id: data['id']?.toString() ?? '',
+          enabled: data['enable'] != false,
+          port: _parseInt(data['ws_reverse_port'], -1),
+          token: data['ws_reverse_token']?.toString() ?? '',
+        ),
+      );
+    }
+    return result;
+  }
+
+  Future<Map<String, dynamic>?> _readAstrBotConfig() async {
+    for (final file in _astrBotConfigFiles) {
+      final config = await _readJsonMap(file);
+      if (config != null) return config;
+    }
+    return null;
+  }
+
+  Future<void> _writeAstrBotConfig(Map<String, dynamic> config) async {
+    var wrote = false;
+    for (final file in _astrBotConfigFiles) {
+      if (await file.exists()) {
+        await _writeJsonMap(file, config);
+        wrote = true;
+      }
+    }
+    if (!wrote) {
+      await _writeJsonMap(_astrBotConfigFiles.first, config);
+    }
+  }
+
+  Future<Set<int>> _usedNapCatOneBotPorts({String? exceptId}) async {
+    final ports = <int>{};
+    for (final instance in napCatInstances) {
+      final id = instance['id']?.toString() ?? '';
+      if (id.isEmpty || id == exceptId) continue;
+      final config = await _readNapCatOneBotConfigForPortScan(id);
+      if (config == null) continue;
+      for (final client in _webSocketClientList(config)) {
+        if (client is! Map) continue;
+        final port = _extractWsPort(client['url']?.toString() ?? '');
+        if (port != null) ports.add(port);
+      }
+    }
+    return ports;
+  }
+
+  Future<Set<int>> _matchingAstrBotOneBotPorts() async {
+    final ports = <int>{};
+    for (final adapter in await listAstrBotOneBotAdapters()) {
+      if (adapter.token != NapCatInstanceDefaults.defaultOneBotToken) continue;
+      if (adapter.port >= NapCatInstanceDefaults.firstOneBotPort &&
+          adapter.port <= NapCatInstanceDefaults.lastOneBotPort) {
+        ports.add(adapter.port);
+      }
+    }
+    return ports;
+  }
+
+  Future<int> _allocateOneBotPort({String? exceptId}) async {
+    final blackList = await _usedNapCatOneBotPorts(exceptId: exceptId);
+    final whiteList = await _matchingAstrBotOneBotPorts();
+    for (var port = NapCatInstanceDefaults.firstOneBotPort;
+        port <= NapCatInstanceDefaults.lastOneBotPort;
+        port++) {
+      if (blackList.contains(port) || port == ServicePorts.dashboardPort) {
+        continue;
+      }
+      if (whiteList.contains(port)) return port;
+      if (await _isPortAvailable(port)) return port;
+    }
+    throw '没有找到可用的 OneBot 端口';
+  }
+
+  Future<void> _ensureNapCatOneBotConfig(
+    Map<String, dynamic> instance, {
+    int? oneBotPort,
+  }) async {
+    final id = instance['id']?.toString() ?? '';
+    if (id.isEmpty) return;
+    final file = _napCatOneBotTemplateConfigFile(id);
+    if (await file.exists()) return;
+    final port = oneBotPort ?? await _allocateOneBotPort(exceptId: id);
+    await _writeJsonMap(file, _buildDefaultNapCatOneBotConfig(port));
+    _updateNapCatInstance(id, {
+      'boundWebSocketName': NapCatInstanceDefaults.defaultWebSocketClientName,
+    });
+  }
+
+  Future<NapCatWebSocketClient?> selectedNapCatWebSocketClient(
+    Map<String, dynamic> instance,
+  ) async {
+    final id = instance['id']?.toString() ?? '';
+    final name = instance['boundWebSocketName']?.toString() ?? '';
+    if (id.isEmpty || name.isEmpty) return null;
+    final clients = await listNapCatWebSocketClients(id);
+    return clients.firstWhereOrNull((client) => client.name == name);
+  }
+
+  Future<AstrBotOneBotAdapter?> selectedAstrBotAdapter(
+    Map<String, dynamic> instance,
+  ) async {
+    final id = instance['boundAdapterId']?.toString() ?? '';
+    if (id.isEmpty) return null;
+    final adapters = await listAstrBotOneBotAdapters();
+    return adapters.firstWhereOrNull((adapter) => adapter.id == id);
+  }
+
+  Future<AstrBotOneBotAdapter?> matchingAstrBotAdapterForClient(
+    NapCatWebSocketClient client,
+  ) async {
+    final adapters = await listAstrBotOneBotAdapters();
+    return adapters.firstWhereOrNull(
+      (adapter) => adapter.port == client.port && adapter.token == client.token,
+    );
+  }
+
+  BotBindingConfigState compareBotBinding(
+    NapCatWebSocketClient? client,
+    AstrBotOneBotAdapter? adapter,
+  ) {
+    if (client == null || adapter == null) return BotBindingConfigState.unconfigured;
+    if (client.port == adapter.port && client.token == adapter.token) {
+      return BotBindingConfigState.configured;
+    }
+    return BotBindingConfigState.mismatch;
+  }
+
+  bool isAstrBotAdapterBoundByOther(String adapterId, String napCatId) {
+    return napCatInstances.any(
+      (instance) =>
+          instance['id']?.toString() != napCatId &&
+          instance['boundAdapterId']?.toString() == adapterId,
+    );
+  }
+
+  Future<void> bindNapCatWebSocketClient({
+    required String id,
+    required String clientName,
+  }) async {
+    final file = _napCatOneBotAccountConfigFile(id);
+    if (file == null) throw '请先登录 QQ 后再绑定 BOT';
+    final config = await _readJsonMap(file);
+    if (config == null) throw 'NapCat websocket 配置不存在';
+    final clients = _webSocketClientList(config);
+    var found = false;
+    for (final client in clients) {
+      if (client is! Map) continue;
+      if (client['name']?.toString() == clientName) {
+        client['enable'] = true;
+        found = true;
+        break;
+      }
+    }
+    if (!found) throw '未找到 websocket 配置：$clientName';
+    await _writeJsonMap(file, config);
+    _updateNapCatInstance(id, {'boundWebSocketName': clientName});
+  }
+
+  Future<void> bindAstrBotAdapter({
+    required String id,
+    required String adapterId,
+    required bool updateAdapterFromWebSocket,
+    bool invalidatePreviousAdapter = false,
+  }) async {
+    final instance =
+        napCatInstances.firstWhereOrNull((item) => item['id'] == id);
+    if (instance == null) return;
+    final client = await selectedNapCatWebSocketClient(instance);
+    if (client == null) throw '请先绑定 websocket 适配器';
+    if (client.port == null) throw 'websocket URL 缺少端口';
+    final config = await _readAstrBotConfig();
+    if (config == null) throw 'AstrBot 配置不存在';
+    final platforms = config['platform'];
+    if (platforms is! List) throw 'AstrBot platform 配置不存在';
+
+    final oldAdapterId = instance['boundAdapterId']?.toString() ?? '';
+    var foundAdapter = false;
+    for (final item in platforms) {
+      if (item is! Map) continue;
+      if (invalidatePreviousAdapter &&
+          oldAdapterId.isNotEmpty &&
+          oldAdapterId != adapterId &&
+          item['id']?.toString() == oldAdapterId &&
+          !isAstrBotAdapterBoundByOther(oldAdapterId, id)) {
+        item['enable'] = false;
+        item['ws_reverse_port'] = NapCatInstanceDefaults.invalidOneBotPort;
+        item['ws_reverse_token'] = NapCatInstanceDefaults.invalidOneBotToken;
+      }
+      if (item['id']?.toString() == adapterId) {
+        foundAdapter = true;
+        if (updateAdapterFromWebSocket) {
+          item['enable'] = true;
+          item['ws_reverse_host'] = '0.0.0.0';
+          item['ws_reverse_port'] = client.port;
+          item['ws_reverse_token'] = client.token;
+        }
+      }
+    }
+    if (!foundAdapter) throw '未找到 AstrBot 适配器：$adapterId';
+
+    await _writeAstrBotConfig(config);
+    _updateNapCatInstance(id, {'boundAdapterId': adapterId});
+  }
+
+  Future<String> createAstrBotAdapterForNapCat({
+    required String id,
+    required String preferredName,
+    bool allowSharedPreviousAdapter = false,
+  }) async {
+    final instance =
+        napCatInstances.firstWhereOrNull((item) => item['id'] == id);
+    if (instance == null) throw 'NapCat 账号不存在';
+    final client = await selectedNapCatWebSocketClient(instance);
+    if (client == null) throw '请先绑定 websocket 适配器';
+    if (client.port == null) throw 'websocket URL 缺少端口';
+    final config = (await _readAstrBotConfig()) ?? <String, dynamic>{};
+    final platforms = config['platform'];
+    final list = platforms is List ? platforms : <dynamic>[];
+    config['platform'] = list;
+    final oldAdapterId = instance['boundAdapterId']?.toString() ?? '';
+    final oldAdapterShared = oldAdapterId.isNotEmpty &&
+        isAstrBotAdapterBoundByOther(oldAdapterId, id);
+    if (oldAdapterShared && !allowSharedPreviousAdapter) {
+      throw '旧 AstrBot 适配器 $oldAdapterId 已被其他账号绑定';
+    }
+    final adapterId = _uniqueAdapterId(
+      preferredName.trim().isEmpty
+          ? instance['name']?.toString() ?? 'NapCat'
+          : preferredName.trim(),
+      list,
+    );
+    if (oldAdapterId.isNotEmpty && !oldAdapterShared) {
+      for (final item in list) {
+        if (item is Map && item['id']?.toString() == oldAdapterId) {
+          item['enable'] = false;
+          item['ws_reverse_port'] = NapCatInstanceDefaults.invalidOneBotPort;
+          item['ws_reverse_token'] = NapCatInstanceDefaults.invalidOneBotToken;
+          break;
+        }
+      }
+    }
+    list.add({
+      'id': adapterId,
+      'type': 'aiocqhttp',
+      'enable': true,
+      'ws_reverse_host': '0.0.0.0',
+      'ws_reverse_port': client.port,
+      'ws_reverse_token': client.token,
+    });
+    await _writeAstrBotConfig(config);
+    _updateNapCatInstance(id, {'boundAdapterId': adapterId});
+    return adapterId;
+  }
+
+  String _uniqueAdapterId(String baseName, List<dynamic> platforms) {
+    final used = platforms
+        .whereType<Map>()
+        .map((item) => item['id']?.toString() ?? '')
+        .where((id) => id.isNotEmpty)
+        .toSet();
+    var candidate = baseName.trim().isEmpty ? 'NapCat' : baseName.trim();
+    if (!used.contains(candidate)) return candidate;
+    const letters = 'abcdefghijklmnopqrstuvwxyz';
+    final random = Random();
+    do {
+      candidate =
+          '${baseName.trim().isEmpty ? 'NapCat' : baseName.trim()}${letters[random.nextInt(letters.length)]}';
+    } while (used.contains(candidate));
+    return candidate;
   }
 
   bool _isDisplayReserved(int display, {String? exceptId}) {
@@ -1106,9 +1652,10 @@ class HomeController extends GetxController {
     final allocatedDisplay = _allocateNapCatDisplay(
       requestedDisplay: display,
     );
+    final oneBotPort = await _allocateOneBotPort();
     final nextIndex = _nextNapCatAccountIndex();
     final id = 'qq${nextIndex}_${DateTime.now().millisecondsSinceEpoch}';
-    napCatInstances.add({
+    final instance = {
       'id': id,
       'name': _defaultNapCatName(nextIndex),
       'qq': '',
@@ -1118,9 +1665,19 @@ class HomeController extends GetxController {
       'autoLogin': false,
       'autoLoginTouched': false,
       'qqAutoDetected': false,
+      'boundWebSocketName': NapCatInstanceDefaults.defaultWebSocketClientName,
+      'boundAdapterId': '',
       'running': false,
-    });
+    };
+    napCatInstances.add(instance);
     _saveNapCatInstances();
+    await _ensureNapCatOneBotConfig(instance, oneBotPort: oneBotPort);
+    final client = await selectedNapCatWebSocketClient(instance);
+    final adapter =
+        client == null ? null : await matchingAstrBotAdapterForClient(client);
+    if (adapter != null) {
+      _updateNapCatInstance(id, {'boundAdapterId': adapter.id});
+    }
   }
 
   Future<void> removeNapCatInstance(String id) async {
@@ -1224,6 +1781,7 @@ class HomeController extends GetxController {
       '收到启动请求，正在准备 Ubuntu 入口脚本...',
     );
     await _prepareEnvironmentScripts();
+    await _ensureNapCatOneBotConfig(instance);
     await _writeNapCatInstanceLauncher(instance);
     await _patchNapCatInstanceWebUiJson(instance);
 
@@ -1473,6 +2031,8 @@ class HomeController extends GetxController {
       'autoLogin': false,
       'autoLoginTouched': false,
       'qqAutoDetected': false,
+      'boundWebSocketName': '',
+      'boundAdapterId': '',
       'running': false,
     });
   }
@@ -1593,7 +2153,6 @@ INSTANCE_HOME="\$BASE_HOME/napcat_instances/\${INSTANCE_ID}_home"
 INSTANCE_WORKDIR="\$BASE_HOME/napcat_instances/\${INSTANCE_ID}_napcat"
 INSTANCE_DISPLAY="$display"
 WEBUI_PORT="$webUiPort"
-ONEBOT_WS_PORT="${ServicePorts.oneBotWsPort}"
 
 mkdir -p "\$INSTANCE_HOME" "\$INSTANCE_WORKDIR/config" "\$INSTANCE_WORKDIR/logs" "\$INSTANCE_WORKDIR/cache"
 mkdir -p "\$INSTANCE_HOME/.config" "\$INSTANCE_HOME/.cache" "\$INSTANCE_HOME/.local/share"
@@ -1602,47 +2161,41 @@ if [ -d "\$BASE_HOME/napcat/config" ]; then
   cp -n "\$BASE_HOME/napcat/config/"*.json "\$INSTANCE_WORKDIR/config/" 2>/dev/null || true
 fi
 
-if [ ! -f "\$INSTANCE_WORKDIR/config/onebot11.json" ]; then
-  cat > "\$INSTANCE_WORKDIR/config/onebot11.json" <<EOF
-{
-  "network": {
-    "httpServers": [],
-    "httpClients": [],
-    "websocketServers": [],
-    "websocketClients": [
-      {
-        "name": "WsClient",
-        "enable": true,
-        "url": "ws://localhost:\$ONEBOT_WS_PORT/ws",
-        "messagePostFormat": "array",
-        "reportSelfMessage": false,
-        "reconnectInterval": 5000,
-        "token": "kasdkfljsadhlskdjhasdlkfshdlafksjdhf",
-        "debug": false,
-        "heartInterval": 30000
-      }
-    ]
-  },
-  "musicSignUrl": "",
-  "enableLocalFile2Url": false,
-  "parseMultMsg": false
-}
-EOF
-fi
-
 cat > "\$INSTANCE_WORKDIR/config/webui.json" <<'EOF'
 $webUiJson
 EOF
-
-sed -i -E "s#\\"url\\"[[:space:]]*:[[:space:]]*\\"ws://localhost:[0-9]+/ws\\"#\\"url\\": \\"ws://localhost:\$ONEBOT_WS_PORT/ws\\"#g" "\$INSTANCE_WORKDIR/config/onebot11.json"
 
 echo "[napcat-instance] id=\$INSTANCE_ID"
 echo "[napcat-instance] DISPLAY=:\$INSTANCE_DISPLAY"
 echo "[napcat-instance] NAPCAT_WORKDIR=\$INSTANCE_WORKDIR"
 echo "[napcat-instance] WEBUI_PORT=\$WEBUI_PORT"
 
-Xvfb ":\$INSTANCE_DISPLAY" -screen 0 1x1x8 +extension GLX +render > /dev/null 2>&1 &
+if [ -f "\$INSTANCE_WORKDIR/xvfb.pid" ]; then
+  kill "\$(cat "\$INSTANCE_WORKDIR/xvfb.pid")" 2>/dev/null || true
+fi
+pkill -f "Xvfb :\$INSTANCE_DISPLAY" 2>/dev/null || true
+rm -f "/tmp/.X\${INSTANCE_DISPLAY}-lock" "/tmp/.X11-unix/X\${INSTANCE_DISPLAY}" 2>/dev/null || true
+mkdir -p /tmp/.X11-unix
+chmod 1777 /tmp/.X11-unix 2>/dev/null || true
+
+Xvfb ":\$INSTANCE_DISPLAY" -screen 0 800x600x16 +extension GLX +render > "\$INSTANCE_WORKDIR/xvfb.log" 2>&1 &
 echo "\$!" > "\$INSTANCE_WORKDIR/xvfb.pid"
+for i in \$(seq 1 50); do
+  if [ -S "/tmp/.X11-unix/X\${INSTANCE_DISPLAY}" ]; then
+    break
+  fi
+  if ! kill -0 "\$(cat "\$INSTANCE_WORKDIR/xvfb.pid")" 2>/dev/null; then
+    echo "[napcat-instance] Xvfb 启动失败"
+    cat "\$INSTANCE_WORKDIR/xvfb.log" 2>/dev/null || true
+    exit 1
+  fi
+  sleep 0.1
+done
+if [ ! -S "/tmp/.X11-unix/X\${INSTANCE_DISPLAY}" ]; then
+  echo "[napcat-instance] Xvfb 未就绪，无法启动 QQ"
+  cat "\$INSTANCE_WORKDIR/xvfb.log" 2>/dev/null || true
+  exit 1
+fi
 export DISPLAY=":\$INSTANCE_DISPLAY"
 export NAPCAT_WORKDIR="\$INSTANCE_WORKDIR"
 export HOME="\$INSTANCE_HOME"

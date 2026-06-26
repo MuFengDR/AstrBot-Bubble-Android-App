@@ -1,7 +1,7 @@
 name: astrbot_android
 description: AstrBot Android App
 publish_to: "none" # Remove this line if you wish to publish to pub.dev
-version: 0.1.0-bate2+2
+version: 0.1.0-bate3+3
 environment:
   sdk: ">=3.3.0 <4.0.0"
 

@@ -516,12 +516,17 @@ String getCopyFilesScript(String currentVersion) {
 copy_files(){
   mkdir -p "\$UBUNTU_PATH/root"
 
-  OLD_GIT_CLONE_LINE=\$(grep '^CUSTOM_GIT_CLONE=' "\$UBUNTU_PATH/root/astrbot-startup.sh" 2>/dev/null)
+  OLD_GIT_CLONE_LINE=\$(grep -m 1 '^CUSTOM_GIT_CLONE=' "\$UBUNTU_PATH/root/astrbot-startup.sh" 2>/dev/null)
   cp ~/astrbot-startup.sh "\$UBUNTU_PATH/root/astrbot-startup.sh"
-  if [ -n "\$OLD_GIT_CLONE_LINE" ] && ! echo "\$OLD_GIT_CLONE_LINE" | grep -q '=""\$'; then
-    sed -i "s|^CUSTOM_GIT_CLONE=.*|\$OLD_GIT_CLONE_LINE|" "\$UBUNTU_PATH/root/astrbot-startup.sh"
+  if [ -n "\$OLD_GIT_CLONE_LINE" ] && echo "\$OLD_GIT_CLONE_LINE" | grep -Eq '^CUSTOM_GIT_CLONE="[A-Za-z0-9._:/?&=%+@# -]*"\$' && ! echo "\$OLD_GIT_CLONE_LINE" | grep -q '=""\$'; then
+    OLD_GIT_CLONE_VALUE=\$(printf '%s' "\$OLD_GIT_CLONE_LINE" | sed 's/^CUSTOM_GIT_CLONE="//; s/"\$//')
+    OLD_GIT_CLONE_ESCAPED=\$(printf '%s' "\$OLD_GIT_CLONE_VALUE" | sed 's/[&|]/\\\\&/g')
+    sed -i "s|^CUSTOM_GIT_CLONE=.*|CUSTOM_GIT_CLONE=\\"\$OLD_GIT_CLONE_ESCAPED\\"|" "\$UBUNTU_PATH/root/astrbot-startup.sh"
     echo "startup script refreshed, custom git clone preserved"
   else
+    if [ -n "\$OLD_GIT_CLONE_LINE" ]; then
+      echo "startup script refreshed, invalid custom git clone ignored"
+    fi
     echo "startup script refreshed"
   fi
   cp ~/cmd_config.json "\$UBUNTU_PATH/root/cmd_config.json"
@@ -582,7 +587,7 @@ $loginUbuntu
 ${getCopyFilesScript(currentVersion)}
 clear_lines
 start_astrbot(){
-  login_ubuntu "export TMPDIR='${RuntimeEnvir.tmpPath}'; export ASTRBOT_DASHBOARD_PORT='${ServicePorts.dashboardPort}'; if [ ! -x /root/.local/bin/uv ] || [ ! -d /root/AstrBot ] || [ ! -d /root/AstrBot/.venv ]; then echo __ASTRBOT_MANUAL_ENV_REQUIRED__; echo 'AstrBot 环境未安装完整，请到主页环境管理安装。'; exit 1; fi; cd /root/AstrBot; echo 'AstrBot 启动中'; /root/.local/bin/uv run --no-sync main.py"
+  login_ubuntu "export TMPDIR='${RuntimeEnvir.tmpPath}'; export ASTRBOT_DASHBOARD_PORT='${ServicePorts.dashboardPort}'; if [ ! -x /root/.local/bin/uv ] || [ ! -d /root/AstrBot ] || [ ! -f /root/AstrBot/pyproject.toml ] || [ ! -f /root/AstrBot/main.py ] || [ ! -d /root/AstrBot/.venv ]; then echo __ASTRBOT_MANUAL_ENV_REQUIRED__; echo 'AstrBot 环境未安装完整，请到主页环境管理安装。'; exit 1; fi; cd /root/AstrBot; echo 'AstrBot 启动中'; /root/.local/bin/uv run --no-sync main.py"
 }
 ''';
 }

@@ -24,7 +24,32 @@ echo "[launcher2] DISPLAY=:$INSTANCE_DISPLAY"
 echo "[launcher2] NAPCAT_WORKDIR=$INSTANCE_WORKDIR"
 echo "[launcher2] HOME=$INSTANCE_HOME"
 
-Xvfb ":$INSTANCE_DISPLAY" -screen 0 1x1x8 +extension GLX +render > /dev/null 2>&1 &
+if [ -f "$INSTANCE_WORKDIR/xvfb.pid" ]; then
+  kill "$(cat "$INSTANCE_WORKDIR/xvfb.pid")" 2>/dev/null || true
+fi
+pkill -f "Xvfb :$INSTANCE_DISPLAY" 2>/dev/null || true
+rm -f "/tmp/.X${INSTANCE_DISPLAY}-lock" "/tmp/.X11-unix/X${INSTANCE_DISPLAY}" 2>/dev/null || true
+mkdir -p /tmp/.X11-unix
+chmod 1777 /tmp/.X11-unix 2>/dev/null || true
+
+Xvfb ":$INSTANCE_DISPLAY" -screen 0 800x600x16 +extension GLX +render > "$INSTANCE_WORKDIR/xvfb.log" 2>&1 &
+echo "$!" > "$INSTANCE_WORKDIR/xvfb.pid"
+for i in $(seq 1 50); do
+  if [ -S "/tmp/.X11-unix/X${INSTANCE_DISPLAY}" ]; then
+    break
+  fi
+  if ! kill -0 "$(cat "$INSTANCE_WORKDIR/xvfb.pid")" 2>/dev/null; then
+    echo "[launcher2] Xvfb 启动失败"
+    cat "$INSTANCE_WORKDIR/xvfb.log" 2>/dev/null || true
+    exit 1
+  fi
+  sleep 0.1
+done
+if [ ! -S "/tmp/.X11-unix/X${INSTANCE_DISPLAY}" ]; then
+  echo "[launcher2] Xvfb 未就绪，无法启动 QQ"
+  cat "$INSTANCE_WORKDIR/xvfb.log" 2>/dev/null || true
+  exit 1
+fi
 export DISPLAY=":$INSTANCE_DISPLAY"
 export NAPCAT_WORKDIR="$INSTANCE_WORKDIR"
 export HOME="$INSTANCE_HOME"

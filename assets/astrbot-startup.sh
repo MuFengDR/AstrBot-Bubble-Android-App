@@ -352,6 +352,15 @@ install_astrbot(){
 
   killall uv 2>/dev/null
 
+  if [ -d "$INSTALL_DIR" ] && { [ ! -f "$INSTALL_DIR/pyproject.toml" ] || [ ! -f "$INSTALL_DIR/main.py" ]; }; then
+    echo "AstrBot 安装目录不完整，准备重新安装..."
+    rm -rf "$HOME/AstrBot_data_reinstall_backup"
+    if [ -d "$INSTALL_DIR/data" ]; then
+      cp -r "$INSTALL_DIR/data" "$HOME/AstrBot_data_reinstall_backup"
+    fi
+    rm -rf "$INSTALL_DIR"
+  fi
+
   # 检查是否已安装
   if [ ! -d "$INSTALL_DIR" ]; then
     cd $HOME
@@ -379,14 +388,14 @@ install_astrbot(){
     else
       network_test
       
-      # 使用默认逻辑：获取最新的 tag
-      LATEST_TAG=$(git ls-remote --tags --sort='-v:refname' ${target_proxy:+${target_proxy}/}https://github.com/AstrBotDevs/AstrBot.git | head -n 1 | awk -F'/' '{print $3}' | sed 's/\^{}//g')
+      # 使用默认逻辑：获取最新的正式版 tag，跳过 beta/alpha/rc/dev/pre 等预发布版本
+      LATEST_TAG=$(git ls-remote --tags --sort='-v:refname' ${target_proxy:+${target_proxy}/}https://github.com/AstrBotDevs/AstrBot.git | awk -F'/' '{print $3}' | sed 's/\^{}//g' | grep -E '^v?[0-9]+(\.[0-9]+){1,2}$' | head -n 1)
 
       if [ -z "$LATEST_TAG" ]; then
         echo "警告: 无法获取最新 tag，使用 master 分支"
         CLONE_BRANCH="master"
       else
-        echo "最新版本: $LATEST_TAG"
+        echo "最新正式版: $LATEST_TAG"
         CLONE_BRANCH="$LATEST_TAG"
       fi
 
