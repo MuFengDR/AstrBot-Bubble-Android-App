@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -329,7 +330,7 @@ class _LauncherPageState extends State<LauncherPage>
         children: [
           Row(
             children: [
-              const Icon(Icons.smart_toy),
+              const AstrBotSparkleIcon(),
               const SizedBox(width: 8),
               Text('AstrBot', style: Theme.of(context).textTheme.titleMedium),
             ],
@@ -1368,28 +1369,28 @@ class _LauncherPageState extends State<LauncherPage>
         'base',
         '基础命令',
         'sudo / git / curl',
-        Icons.construction,
+        const Icon(Icons.extension),
         reinstallDescription: '将重新检查并补装 sudo / git / curl，不会主动删除系统包。是否继续？',
       ),
       _EnvStep(
         'uv',
         'uv',
         'Python 依赖管理工具',
-        Icons.download,
+        const Icon(Icons.construction),
         reinstallDescription: '将删除现有 uv/uvx 后重新下载。是否继续？',
       ),
       _EnvStep(
         'napcat',
         'NapCat',
         '安装或修复 NapCatQQ',
-        Icons.extension,
+        const Icon(Icons.pets),
         reinstallDescription: '将清理 NapCat 安装文件并重新安装，尽量保留配置目录。是否继续？',
       ),
       _EnvStep(
         'astrbot',
         'AstrBot',
         '克隆 AstrBot 并同步依赖',
-        Icons.smart_toy,
+        const AstrBotSparkleIcon(),
         reinstallDescription:
             '将重新克隆 AstrBot 并重建 Python 依赖，尽量保留 data 数据目录。是否继续？',
       ),
@@ -1465,7 +1466,10 @@ class _LauncherPageState extends State<LauncherPage>
       leading: Stack(
         clipBehavior: Clip.none,
         children: [
-          Icon(step.icon, color: state.enabled ? null : Colors.grey),
+          IconTheme.merge(
+            data: IconThemeData(color: state.enabled ? null : Colors.grey),
+            child: step.icon,
+          ),
           Positioned(
             right: -8,
             bottom: -6,
@@ -1534,7 +1538,7 @@ class _EnvStep {
   final String id;
   final String title;
   final String subtitle;
-  final IconData icon;
+  final Widget icon;
   final String? reinstallDescription;
 
   const _EnvStep(
@@ -1547,6 +1551,70 @@ class _EnvStep {
 
   String get reinstallMessage =>
       reinstallDescription ?? '将先清理现有 $title 组件，再重新安装。是否继续？';
+}
+
+class AstrBotSparkleIcon extends StatelessWidget {
+  final double? size;
+  final Color? color;
+
+  const AstrBotSparkleIcon({
+    super.key,
+    this.size,
+    this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final iconTheme = IconTheme.of(context);
+    final resolvedSize = size ?? iconTheme.size ?? 24;
+    final resolvedColor = color ?? iconTheme.color ?? Colors.black;
+    return SizedBox.square(
+      dimension: resolvedSize,
+      child: CustomPaint(
+        painter: _AstrBotSparkleIconPainter(resolvedColor),
+      ),
+    );
+  }
+}
+
+class _AstrBotSparkleIconPainter extends CustomPainter {
+  final Color color;
+
+  const _AstrBotSparkleIconPainter(this.color);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill
+      ..isAntiAlias = true;
+
+    final center = Offset(size.width / 2, size.height / 2);
+    final longRadius = size.shortestSide * 0.46;
+    final shortRadius = size.shortestSide * 0.16;
+    final path = Path();
+
+    for (var i = 0; i < 8; i++) {
+      final angle = -1.57079632679 + i * 0.78539816339;
+      final radius = i.isEven ? longRadius : shortRadius;
+      final point = Offset(
+        center.dx + radius * math.cos(angle),
+        center.dy + radius * math.sin(angle),
+      );
+      if (i == 0) {
+        path.moveTo(point.dx, point.dy);
+      } else {
+        path.lineTo(point.dx, point.dy);
+      }
+    }
+
+    canvas.drawPath(path..close(), paint);
+  }
+
+  @override
+  bool shouldRepaint(_AstrBotSparkleIconPainter oldDelegate) {
+    return oldDelegate.color != color;
+  }
 }
 
 class _EnvStepState {
