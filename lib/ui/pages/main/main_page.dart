@@ -148,8 +148,8 @@ class _MainPageState extends State<MainPage> {
               ),
               destinations: const [
                 NavigationDestination(
-                  icon: Icon(Icons.smart_toy_outlined, size: 22),
-                  selectedIcon: Icon(Icons.smart_toy, size: 22),
+                  icon: Icon(Icons.home_outlined, size: 22),
+                  selectedIcon: Icon(Icons.home, size: 22),
                   label: '主页',
                 ),
                 NavigationDestination(
