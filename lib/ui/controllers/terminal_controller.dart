@@ -111,6 +111,7 @@ class HomeController extends GetxController {
   final RxDouble topNavGlassOpacity = 0.62.obs;
   final RxDouble statusOverlayOpacity = 0.38.obs;
   final RxDouble terminalOverlayOpacity = 0.55.obs;
+  final RxDouble homeFontScale = 1.0.obs;
   final Map<String, Pty> _napCatInstanceTerminals = {};
   final Map<String, StreamSubscription> _napCatInstanceSubscriptions = {};
   final Set<String> _napCatInstanceQqProbing = {};
@@ -128,14 +129,13 @@ class HomeController extends GetxController {
   bool _isQrcodeProcessed = false; // 二维码处理完成标志
   bool _isAppInForeground = true; // 应用是否在前台
   bool showStartupProgress = true; // 是否显示启动进度浮层
-  static const int _maxStartupLogChars = 120000;
   String _startupLogText = '';
   String _terminalWriteBuffer = '';
   Timer? _terminalWriteTimer;
 
   Terminal _createMainTerminal() {
     return Terminal(
-      maxLines: 10000,
+      maxLines: TerminalLogLimits.maxTerminalLines,
       onResize: (width, height, pixelWidth, pixelHeight) {
         pseudoTerminal?.resize(height, width);
       },
@@ -195,19 +195,34 @@ class HomeController extends GetxController {
   void _recordStartupLog(String text) {
     if (text.isEmpty) return;
     _startupLogText += _cleanTerminalLog(text);
-    if (_startupLogText.length > _maxStartupLogChars) {
-      _startupLogText = _startupLogText
-          .substring(_startupLogText.length - _maxStartupLogChars);
-    }
+    _trimStartupLog();
+  }
+
+  void _trimStartupLog() {
+    _startupLogText = TerminalLogLimits.trimText(
+      _startupLogText,
+      TerminalLogLimits.maxLogChars,
+    );
+  }
+
+  void setTerminalLogLimitPercent(int value) {
+    TerminalLogLimits.percent.value = TerminalLogLimits.normalizePercent(value);
+    _trimStartupLog();
+    _terminalWriteBuffer = TerminalLogLimits.trimText(
+      _terminalWriteBuffer,
+      TerminalLogLimits.maxWriteBufferChars,
+    );
+    terminalTabManager.trimAllLogs();
+    update();
   }
 
   void _writeTerminal(String text) {
     _recordStartupLog(text);
     _terminalWriteBuffer += text;
-    if (_terminalWriteBuffer.length > 20000) {
-      _terminalWriteBuffer =
-          _terminalWriteBuffer.substring(_terminalWriteBuffer.length - 20000);
-    }
+    _terminalWriteBuffer = TerminalLogLimits.trimText(
+      _terminalWriteBuffer,
+      TerminalLogLimits.maxWriteBufferChars,
+    );
     _terminalWriteTimer ??= Timer(const Duration(milliseconds: 50), () {
       final buffered = _terminalWriteBuffer;
       _terminalWriteBuffer = '';
@@ -770,23 +785,34 @@ class HomeController extends GetxController {
   }) async {
     await _prepareEnvironmentScripts();
     final doneMarker = '__ASTRBOT_ENV_STEP_DONE__:$step';
+    final ubuntuStepCommand = StringBuffer()
+      ..write('export TMPDIR=${RuntimeEnvir.tmpPath}; ')
+      ..write('export L_NOT_INSTALLED=${S.current.uninstalled}; ')
+      ..write('export L_INSTALLING=${S.current.installing}; ')
+      ..write('export L_INSTALLED=${S.current.installed}; ')
+      ..write('export ASTRBOT_DASHBOARD_PORT=${ServicePorts.dashboardPort}; ')
+      ..write('export ASTRBOT_ONEBOT_WS_PORT=${ServicePorts.oneBotWsPort}; ')
+      ..write('export ASTRBOT_GITHUB_PROXY=${EnvironmentConfig.githubProxy}; ')
+      ..write('export ASTRBOT_FORCE_REINSTALL_STEP=${reinstall ? step : ''}; ')
+      ..write('chmod +x /root/astrbot-startup.sh; ')
+      ..write('bash /root/astrbot-startup.sh --step $step && ')
+      ..write("printf '%s\\n' ${_shellSingleQuote(doneMarker)}");
+
+    final scriptFile = File(
+      '${RuntimeEnvir.homePath}/env_step_${step}_${DateTime.now().millisecondsSinceEpoch}.sh',
+    );
+    final script = StringBuffer()
+      ..writeln('source ${RuntimeEnvir.homePath}/common.sh')
+      ..writeln('install_ubuntu || exit 1')
+      ..writeln('copy_files || exit 1')
+      ..writeln(
+        'login_ubuntu ${_shellSingleQuote(ubuntuStepCommand.toString())}',
+      );
+    await scriptFile.writeAsString(_toUnixLineEndings(script.toString()));
+
     final command = StringBuffer()
       ..writeln('source ${RuntimeEnvir.homePath}/common.sh')
-      ..writeln('install_ubuntu')
-      ..writeln('copy_files')
-      ..writeln(
-        'login_ubuntu "export TMPDIR=${RuntimeEnvir.tmpPath}; '
-        'export L_NOT_INSTALLED=${S.current.uninstalled}; '
-        'export L_INSTALLING=${S.current.installing}; '
-        'export L_INSTALLED=${S.current.installed}; '
-        'export ASTRBOT_DASHBOARD_PORT=${ServicePorts.dashboardPort}; '
-        'export ASTRBOT_ONEBOT_WS_PORT=${ServicePorts.oneBotWsPort}; '
-        'export ASTRBOT_GITHUB_PROXY=${EnvironmentConfig.githubProxy}; '
-        'export ASTRBOT_FORCE_REINSTALL_STEP=${reinstall ? step : ''}; '
-        'chmod +x /root/astrbot-startup.sh; '
-        'bash /root/astrbot-startup.sh --step $step; '
-        'echo \\"__ASTRBOT_ENV_\\"\\"STEP_DONE__:$step\\""',
-      );
+      ..writeln('sh ${_shellSingleQuote(scriptFile.path)}');
     await terminalTabManager.addCommandTerminalTab(
       title: title,
       command: command.toString(),
@@ -940,6 +966,7 @@ class HomeController extends GetxController {
     topNavGlassOpacity.value = UiPreferences.topNavGlassOpacity;
     statusOverlayOpacity.value = UiPreferences.statusOverlayOpacity;
     terminalOverlayOpacity.value = UiPreferences.terminalOverlayOpacity;
+    homeFontScale.value = UiPreferences.homeFontScale;
   }
 
   void setHomeBackgroundPath(String path) {
@@ -975,6 +1002,11 @@ class HomeController extends GetxController {
   void setTerminalOverlayOpacity(double value) {
     UiPreferences.saveTerminalOverlayOpacity(value);
     terminalOverlayOpacity.value = UiPreferences.terminalOverlayOpacity;
+  }
+
+  void setHomeFontScale(double value) {
+    UiPreferences.saveHomeFontScale(value);
+    homeFontScale.value = UiPreferences.homeFontScale;
   }
 
   void _loadNapCatInstances() {
@@ -1169,8 +1201,8 @@ class HomeController extends GetxController {
     }
   }
 
-  File _napCatOneBotTemplateConfigFile(String id) =>
-      File('$ubuntuPath/root/napcat_instances/${id}_napcat/config/onebot11.json');
+  File _napCatOneBotTemplateConfigFile(String id) => File(
+      '$ubuntuPath/root/napcat_instances/${id}_napcat/config/onebot11.json');
 
   String _napCatInstanceQq(String id) {
     final instance =
@@ -1293,6 +1325,18 @@ class HomeController extends GetxController {
       );
     }
     return result;
+  }
+
+  Future<int?> napCatInstanceOneBotPort(String id) async {
+    final config = await _readNapCatOneBotConfigForPortScan(id);
+    if (config == null) return null;
+    for (final client in _webSocketClientList(config)) {
+      if (client is! Map) continue;
+      final url = client['url']?.toString() ?? '';
+      final port = _extractWsPort(url);
+      if (port != null) return port;
+    }
+    return null;
   }
 
   Future<List<AstrBotOneBotAdapter>> listAstrBotOneBotAdapters() async {
@@ -1430,7 +1474,9 @@ class HomeController extends GetxController {
     NapCatWebSocketClient? client,
     AstrBotOneBotAdapter? adapter,
   ) {
-    if (client == null || adapter == null) return BotBindingConfigState.unconfigured;
+    if (client == null || adapter == null) {
+      return BotBindingConfigState.unconfigured;
+    }
     if (client.port == adapter.port && client.token == adapter.token) {
       return BotBindingConfigState.configured;
     }
@@ -1689,6 +1735,8 @@ class HomeController extends GetxController {
   Future<void> updateNapCatInstanceConfig({
     required String id,
     int? webUiPort,
+    int? oneBotPort,
+    int? display,
     String? name,
     String? qq,
   }) async {
@@ -1701,6 +1749,11 @@ class HomeController extends GetxController {
       NapCatInstanceDefaults.firstExtraWebUiPort,
     );
     final nextPort = webUiPort ?? currentPort;
+    final currentDisplay = _parseInt(
+      current['display'],
+      NapCatInstanceDefaults.firstExtraDisplay,
+    );
+    final nextDisplay = display ?? currentDisplay;
 
     if (nextPort != currentPort) {
       if (nextPort < NapCatInstanceDefaults.firstExtraWebUiPort ||
@@ -1721,9 +1774,27 @@ class HomeController extends GetxController {
         throw 'WebUI 端口 $nextPort 当前已被系统占用';
       }
     }
+    if (nextDisplay != currentDisplay) {
+      if (nextDisplay < 2 || nextDisplay > 99) {
+        throw 'DISPLAY 建议填写 2-99';
+      }
+      if (_isDisplayReserved(nextDisplay, exceptId: id)) {
+        throw 'DISPLAY :$nextDisplay 已被配置占用';
+      }
+    }
+    if (oneBotPort != null) {
+      if (oneBotPort < 1 || oneBotPort > 65535) {
+        throw 'OneBot WebSocket 端口必须在 1-65535 之间';
+      }
+      final usedPorts = await _usedNapCatOneBotPorts(exceptId: id);
+      if (usedPorts.contains(oneBotPort)) {
+        throw 'OneBot WebSocket 端口 $oneBotPort 已被其他 NapCat 账号使用';
+      }
+    }
 
     _updateNapCatInstance(id, {
       'webUiPort': nextPort,
+      'display': nextDisplay,
       if (name != null && name.trim().isNotEmpty) 'name': name.trim(),
       if (qq != null) ...{
         'qq': qq.trim(),
@@ -1733,8 +1804,36 @@ class HomeController extends GetxController {
     final updated =
         napCatInstances.firstWhereOrNull((item) => item['id'] == id);
     if (updated == null) return;
+    if (oneBotPort != null) {
+      await _updateNapCatOneBotPort(id, oneBotPort);
+    }
     await _writeNapCatInstanceLauncher(updated);
     await _patchNapCatInstanceWebUiJson(updated);
+  }
+
+  Future<void> _updateNapCatOneBotPort(String id, int port) async {
+    final files = <File>[
+      _napCatOneBotTemplateConfigFile(id),
+      if (_napCatOneBotAccountConfigFile(id) != null)
+        _napCatOneBotAccountConfigFile(id)!,
+    ];
+    for (final file in files) {
+      final config = await _readJsonMap(file) ?? _buildDefaultNapCatOneBotConfig(port);
+      final clients = _webSocketClientList(config);
+      if (clients.isEmpty) {
+        clients.add(
+          _buildDefaultNapCatOneBotConfig(port)['network']
+              ['websocketClients'][0],
+        );
+      } else {
+        final first = clients.first;
+        if (first is Map) {
+          first['url'] = _oneBotWsUrl(port);
+          first['enable'] = true;
+        }
+      }
+      await _writeJsonMap(file, config);
+    }
   }
 
   Future<void> setNapCatInstanceAutoLogin(String id, bool enabled) async {
@@ -2153,6 +2252,7 @@ INSTANCE_HOME="\$BASE_HOME/napcat_instances/\${INSTANCE_ID}_home"
 INSTANCE_WORKDIR="\$BASE_HOME/napcat_instances/\${INSTANCE_ID}_napcat"
 INSTANCE_DISPLAY="$display"
 WEBUI_PORT="$webUiPort"
+XVFB_SCREEN="1x1x8"
 
 mkdir -p "\$INSTANCE_HOME" "\$INSTANCE_WORKDIR/config" "\$INSTANCE_WORKDIR/logs" "\$INSTANCE_WORKDIR/cache"
 mkdir -p "\$INSTANCE_HOME/.config" "\$INSTANCE_HOME/.cache" "\$INSTANCE_HOME/.local/share"
@@ -2169,6 +2269,7 @@ echo "[napcat-instance] id=\$INSTANCE_ID"
 echo "[napcat-instance] DISPLAY=:\$INSTANCE_DISPLAY"
 echo "[napcat-instance] NAPCAT_WORKDIR=\$INSTANCE_WORKDIR"
 echo "[napcat-instance] WEBUI_PORT=\$WEBUI_PORT"
+echo "[napcat-instance] XVFB_SCREEN=\$XVFB_SCREEN"
 
 if [ -f "\$INSTANCE_WORKDIR/xvfb.pid" ]; then
   kill "\$(cat "\$INSTANCE_WORKDIR/xvfb.pid")" 2>/dev/null || true
@@ -2178,7 +2279,7 @@ rm -f "/tmp/.X\${INSTANCE_DISPLAY}-lock" "/tmp/.X11-unix/X\${INSTANCE_DISPLAY}" 
 mkdir -p /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix 2>/dev/null || true
 
-Xvfb ":\$INSTANCE_DISPLAY" -screen 0 800x600x16 +extension GLX +render > "\$INSTANCE_WORKDIR/xvfb.log" 2>&1 &
+Xvfb ":\$INSTANCE_DISPLAY" -screen 0 "\$XVFB_SCREEN" +extension GLX +render > "\$INSTANCE_WORKDIR/xvfb.log" 2>&1 &
 echo "\$!" > "\$INSTANCE_WORKDIR/xvfb.pid"
 for i in \$(seq 1 50); do
   if [ -S "/tmp/.X11-unix/X\${INSTANCE_DISPLAY}" ]; then

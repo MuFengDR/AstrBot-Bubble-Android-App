@@ -260,8 +260,59 @@ class _LauncherPageState extends State<LauncherPage>
   }
 
   Future<bool> _hasNapCat() async {
-    return await File('${scripts.ubuntuPath}/root/launcher.sh').exists() &&
+    final qqCandidates = [
+      File('${scripts.ubuntuPath}/usr/bin/qq'),
+      File('${scripts.ubuntuPath}/usr/local/bin/qq'),
+      File('${scripts.ubuntuPath}/opt/QQ/qq'),
+    ];
+    final hasQq = await _anyFileExists(qqCandidates);
+    final hasXvfb = await _anyFileExists([
+      File('${scripts.ubuntuPath}/usr/bin/Xvfb'),
+      File('${scripts.ubuntuPath}/usr/local/bin/Xvfb'),
+    ]);
+    return hasQq &&
+        hasXvfb &&
+        await _hasDpkgPackageInstalled('linuxqq') &&
+        await _hasDpkgPackageInstalled('libnss3') &&
+        await _hasDpkgPackageInstalled('libnspr4') &&
+        await _hasAnyDpkgPackageInstalled(['libasound2t64', 'libasound2']) &&
+        await File('${scripts.ubuntuPath}/root/launcher.sh').exists() &&
+        await File('${scripts.ubuntuPath}/root/libnapcat_launcher.so')
+            .exists() &&
         await Directory('${scripts.ubuntuPath}/root/napcat').exists();
+  }
+
+  Future<bool> _anyFileExists(List<File> files) async {
+    for (final file in files) {
+      if (await file.exists()) return true;
+    }
+    return false;
+  }
+
+  Future<bool> _hasAnyDpkgPackageInstalled(List<String> packageNames) async {
+    for (final packageName in packageNames) {
+      if (await _hasDpkgPackageInstalled(packageName)) return true;
+    }
+    return false;
+  }
+
+  Future<bool> _hasDpkgPackageInstalled(String packageName) async {
+    final statusFile = File('${scripts.ubuntuPath}/var/lib/dpkg/status');
+    if (!await statusFile.exists()) return false;
+    try {
+      final blocks = (await statusFile.readAsString())
+          .replaceAll('\r\n', '\n')
+          .split('\n\n');
+      for (final block in blocks) {
+        if (block.contains('\nPackage: $packageName\n') ||
+            block.startsWith('Package: $packageName\n')) {
+          return block.contains('Status: install ok installed');
+        }
+      }
+    } catch (_) {
+      return false;
+    }
+    return false;
   }
 
   Future<bool> _hasAstrBot() async {
@@ -287,37 +338,45 @@ class _LauncherPageState extends State<LauncherPage>
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        GlassAppBar(
-          title: 'AstrBot',
-          opacity: homeController.topNavGlassOpacity.value,
-          blur: homeController.glassBlurAmount.value * 30,
-          actions: [
-            IconButton(
-              tooltip: '设置',
-              onPressed: _openSettings,
-              icon: const Icon(Icons.settings),
+    return Obx(() {
+      final fontScale = homeController.homeFontScale.value;
+      return MediaQuery(
+        data: MediaQuery.of(context).copyWith(
+          textScaler: TextScaler.linear(fontScale),
+        ),
+        child: Column(
+          children: [
+            GlassAppBar(
+              title: 'AstrBot',
+              opacity: homeController.topNavGlassOpacity.value,
+              blur: homeController.glassBlurAmount.value * 30,
+              actions: [
+                IconButton(
+                  tooltip: '设置',
+                  onPressed: _openSettings,
+                  icon: const Icon(Icons.settings),
+                ),
+              ],
+            ),
+            Expanded(
+              child: ListView(
+                physics: const BouncingScrollPhysics(
+                  parent: AlwaysScrollableScrollPhysics(),
+                ),
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 104),
+                children: [
+                  _buildQuickStartCard(context),
+                  const SizedBox(height: 12),
+                  _buildNapCatAccountsCard(context),
+                  const SizedBox(height: 12),
+                  _buildEnvironmentCard(context),
+                ],
+              ),
             ),
           ],
         ),
-        Expanded(
-          child: ListView(
-            physics: const BouncingScrollPhysics(
-              parent: AlwaysScrollableScrollPhysics(),
-            ),
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 104),
-            children: [
-              _buildQuickStartCard(context),
-              const SizedBox(height: 12),
-              _buildNapCatAccountsCard(context),
-              const SizedBox(height: 12),
-              _buildEnvironmentCard(context),
-            ],
-          ),
-        ),
-      ],
-    );
+      );
+    });
   }
 
   Widget _buildQuickStartCard(BuildContext context) {
@@ -550,7 +609,8 @@ class _LauncherPageState extends State<LauncherPage>
                             ? const SizedBox(
                                 width: 20,
                                 height: 20,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
                               )
                             : Icon(running ? Icons.stop : Icons.play_arrow),
                       ),
@@ -586,7 +646,8 @@ class _LauncherPageState extends State<LauncherPage>
                         itemBuilder: (context) {
                           final token = instance['token']?.toString() ?? '';
                           return [
-                            const PopupMenuItem(value: 'edit', child: Text('编辑')),
+                            const PopupMenuItem(
+                                value: 'edit', child: Text('编辑')),
                             PopupMenuItem(
                               value: 'bindBot',
                               enabled: canBindBot,
@@ -605,8 +666,10 @@ class _LauncherPageState extends State<LauncherPage>
                               value: 'copyUrl',
                               child: Text('复制完整链接'),
                             ),
-                            const PopupMenuItem(value: 'logout', child: Text('退出登录')),
-                            const PopupMenuItem(value: 'delete', child: Text('删除')),
+                            const PopupMenuItem(
+                                value: 'logout', child: Text('退出登录')),
+                            const PopupMenuItem(
+                                value: 'delete', child: Text('删除')),
                           ];
                         },
                       ),
@@ -811,7 +874,8 @@ class _LauncherPageState extends State<LauncherPage>
                               groupValue: data.selectedClient?.name,
                               onChanged: (_) async {
                                 try {
-                                  await homeController.bindNapCatWebSocketClient(
+                                  await homeController
+                                      .bindNapCatWebSocketClient(
                                     id: data.instance['id']?.toString() ?? '',
                                     clientName: client.name,
                                   );
@@ -938,7 +1002,8 @@ class _LauncherPageState extends State<LauncherPage>
       invalidatePrevious = true;
     }
 
-    final mismatch = client.port != adapter.port || client.token != adapter.token;
+    final mismatch =
+        client.port != adapter.port || client.token != adapter.token;
     if (mismatch &&
         homeController.isAstrBotAdapterBoundByOther(adapter.id, id)) {
       final confirmed = await _confirm(
@@ -1082,8 +1147,7 @@ class _LauncherPageState extends State<LauncherPage>
   }
 
   static const String _astrBotRestartNotice = '修改后，已运行的 AstrBot 会重启。';
-  static const String _newAstrBotAdapterNotice =
-      '新建后会自动绑定，已运行的 AstrBot 会重启。';
+  static const String _newAstrBotAdapterNotice = '新建后会自动绑定，已运行的 AstrBot 会重启。';
 
   String _withAstrBotRestartNotice(String content) {
     return '$content\n\n$_astrBotRestartNotice';
@@ -1172,18 +1236,14 @@ class _LauncherPageState extends State<LauncherPage>
   }
 
   Future<void> _showAddNapCatAccountDialog() async {
-    final portController = TextEditingController();
     final result = await _showNapCatAccountDialog(
       title: '添加 NapCat 账号',
-      portController: portController,
     );
-    final portText = portController.text.trim();
-    portController.dispose();
+    if (result == null) return;
 
-    if (result != true) return;
-
-    final webUiPort = portText.isEmpty ? null : int.tryParse(portText);
-    if (portText.isNotEmpty && webUiPort == null) {
+    final webUiPort =
+        result.webUiPortText.isEmpty ? null : int.tryParse(result.webUiPortText);
+    if (result.webUiPortText.isNotEmpty && webUiPort == null) {
       _showSnack('端口只能填写数字，留空表示自动分配');
       return;
     }
@@ -1201,28 +1261,46 @@ class _LauncherPageState extends State<LauncherPage>
     Map<String, dynamic> instance,
   ) async {
     final id = instance['id']?.toString() ?? '';
-    final nameController = TextEditingController(
-      text: instance['name']?.toString() ?? '',
-    );
-    final portController = TextEditingController(
-      text: instance['webUiPort']?.toString() ?? '',
-    );
+    final oneBotPort = await homeController.napCatInstanceOneBotPort(id);
     final result = await _showNapCatAccountDialog(
       title: '编辑 NapCat 账号',
-      nameController: nameController,
-      portController: portController,
+      initialName: instance['name']?.toString() ?? '',
+      initialWebUiPort: instance['webUiPort']?.toString() ?? '',
+      initialOneBotPort: oneBotPort?.toString() ?? '',
+      initialDisplay: instance['display']?.toString() ?? '',
+      showAdvancedFields: true,
     );
-    final port = int.tryParse(portController.text.trim());
-    final name = nameController.text.trim();
-    nameController.dispose();
-    portController.dispose();
+    if (result == null) return;
 
-    if (result != true) return;
+    final portText = result.webUiPortText;
+    final oneBotPortText = result.oneBotPortText;
+    final displayText = result.displayText;
+    final port = int.tryParse(portText);
+    final nextOneBotPort =
+        oneBotPortText.isEmpty ? null : int.tryParse(oneBotPortText);
+    final nextDisplay =
+        displayText.isEmpty ? null : int.tryParse(displayText);
+    final name = result.nameText;
+
+    if (portText.isNotEmpty && port == null) {
+      _showSnack('WebUI 端口只能填写数字');
+      return;
+    }
+    if (oneBotPortText.isNotEmpty && nextOneBotPort == null) {
+      _showSnack('OneBot WebSocket 端口只能填写数字');
+      return;
+    }
+    if (displayText.isNotEmpty && nextDisplay == null) {
+      _showSnack('DISPLAY 只能填写数字');
+      return;
+    }
 
     try {
       await homeController.updateNapCatInstanceConfig(
         id: id,
         webUiPort: port,
+        oneBotPort: nextOneBotPort,
+        display: nextDisplay,
         name: name,
       );
       Future.delayed(
@@ -1232,50 +1310,23 @@ class _LauncherPageState extends State<LauncherPage>
     }
   }
 
-  Future<bool?> _showNapCatAccountDialog({
+  Future<_NapCatAccountDialogResult?> _showNapCatAccountDialog({
     required String title,
-    required TextEditingController portController,
-    TextEditingController? nameController,
+    String initialName = '',
+    String initialWebUiPort = '',
+    String initialOneBotPort = '',
+    String initialDisplay = '',
+    bool showAdvancedFields = false,
   }) {
-    return showDialog<bool>(
+    return showDialog<_NapCatAccountDialogResult>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (nameController != null) ...[
-              TextField(
-                controller: nameController,
-                decoration: const InputDecoration(
-                  labelText: '账号名称',
-                  hintText: '例如：账号1',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-            ],
-            TextField(
-              controller: portController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'NapCat WebUI 端口',
-                hintText: '留空自动分配，范围 6099-6149',
-                border: OutlineInputBorder(),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('保存'),
-          ),
-        ],
+      builder: (context) => _NapCatAccountDialog(
+        title: title,
+        initialName: initialName,
+        initialWebUiPort: initialWebUiPort,
+        initialOneBotPort: initialOneBotPort,
+        initialDisplay: initialDisplay,
+        showAdvancedFields: showAdvancedFields,
       ),
     );
   }
@@ -1499,6 +1550,161 @@ enum _NapCatAccountOperation {
   stopping,
   deleting,
   loggingOut,
+}
+
+class _NapCatAccountDialogResult {
+  final String nameText;
+  final String webUiPortText;
+  final String oneBotPortText;
+  final String displayText;
+
+  const _NapCatAccountDialogResult({
+    required this.nameText,
+    required this.webUiPortText,
+    required this.oneBotPortText,
+    required this.displayText,
+  });
+}
+
+class _NapCatAccountDialog extends StatefulWidget {
+  final String title;
+  final String initialName;
+  final String initialWebUiPort;
+  final String initialOneBotPort;
+  final String initialDisplay;
+  final bool showAdvancedFields;
+
+  const _NapCatAccountDialog({
+    required this.title,
+    required this.initialName,
+    required this.initialWebUiPort,
+    required this.initialOneBotPort,
+    required this.initialDisplay,
+    required this.showAdvancedFields,
+  });
+
+  @override
+  State<_NapCatAccountDialog> createState() => _NapCatAccountDialogState();
+}
+
+class _NapCatAccountDialogState extends State<_NapCatAccountDialog> {
+  late final TextEditingController _nameController;
+  late final TextEditingController _webUiPortController;
+  late final TextEditingController _oneBotPortController;
+  late final TextEditingController _displayController;
+  bool _showAdvanced = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController(text: widget.initialName);
+    _webUiPortController =
+        TextEditingController(text: widget.initialWebUiPort);
+    _oneBotPortController =
+        TextEditingController(text: widget.initialOneBotPort);
+    _displayController = TextEditingController(text: widget.initialDisplay);
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _webUiPortController.dispose();
+    _oneBotPortController.dispose();
+    _displayController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    Navigator.of(context).pop(
+      _NapCatAccountDialogResult(
+        nameText: _nameController.text.trim(),
+        webUiPortText: _webUiPortController.text.trim(),
+        oneBotPortText: _oneBotPortController.text.trim(),
+        displayText: _displayController.text.trim(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (widget.initialName.isNotEmpty || widget.showAdvancedFields) ...[
+              TextField(
+                controller: _nameController,
+                decoration: const InputDecoration(
+                  labelText: '账号名称',
+                  hintText: '例如：账号1',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+            TextField(
+              controller: _webUiPortController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'NapCat WebUI 端口',
+                hintText: '留空自动分配，范围 6099-6149',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            if (widget.showAdvancedFields) ...[
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () {
+                    setState(() => _showAdvanced = !_showAdvanced);
+                  },
+                  icon: Icon(
+                    _showAdvanced ? Icons.expand_less : Icons.expand_more,
+                  ),
+                  label: const Text('高级'),
+                ),
+              ),
+              if (_showAdvanced) ...[
+                const SizedBox(height: 4),
+                TextField(
+                  controller: _oneBotPortController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'OneBot WebSocket 端口',
+                    hintText: '例如：6199',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _displayController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'DISPLAY ID',
+                    hintText: '范围 2-99',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          child: const Text('保存'),
+        ),
+      ],
+    );
+  }
 }
 
 class _BotBindingData {

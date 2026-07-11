@@ -47,8 +47,10 @@ prepare_reinstall_step(){
       fi
       pkill -f 'qq --no-sandbox' 2>/dev/null || true
       pkill -f 'NapCat' 2>/dev/null || true
-      pkill -f 'napcat' 2>/dev/null || true
-      rm -rf "$HOME/napcat" "$HOME/napcat.sh" "$HOME/launcher.sh"
+      pkill -f '/root/launcher_.*\.sh' 2>/dev/null || true
+      pkill -f '/root/launcher\.sh' 2>/dev/null || true
+      pkill -f 'napcat_instances/.*/launcher' 2>/dev/null || true
+      rm -rf "$HOME/napcat" "$HOME/napcat.sh" "$HOME/launcher.sh" "$HOME/launcher.cpp" "$HOME/libnapcat_launcher.so"
       ;;
     astrbot)
       progress_echo "AstrBot 重装准备中"
@@ -225,11 +227,16 @@ install_uv(){
 }
 
 install_napcat(){
-  # 检查是否已安装
-  if [ ! -f "$HOME/launcher.sh" ]; then
+  # 检查是否完整安装。旧版本可能留下 launcher.sh，但 LinuxQQ 或依赖包安装失败。
+  if ! check_napcat_ready >/dev/null 2>&1; then
     progress_echo "Napcat $L_NOT_INSTALLED，$L_INSTALLING..."
+
+    mkdir -p /etc/apt/apt.conf.d
+    printf 'Acquire::ForceIPv4 "true";\n' > /etc/apt/apt.conf.d/99astrbot-force-ipv4
     
-    apt --fix-broken install -y
+    if ! apt --fix-broken install -y; then
+      echo "apt 修复依赖失败，继续执行安装并在结束时做完整校验"
+    fi
 
     # 备份配置目录（如果存在）
     if [ -d "$HOME/napcat/config" ]; then
@@ -237,22 +244,30 @@ install_napcat(){
       cp -r "$HOME/napcat/config" "$HOME/napcat_config_backup"
     fi
     
-    rm -rf $HOME/napcat
+    rm -rf "$HOME/napcat" "$HOME/napcat.sh" "$HOME/launcher.sh" "$HOME/launcher.cpp" "$HOME/libnapcat_launcher.so"
     cd $HOME
     echo "Napcat $L_NOT_INSTALLED，$L_INSTALLING..."
-    curl -o napcat.sh https://raw.githubusercontent.com/NapNeko/napcat-linux-installer/refs/heads/main/install.sh
+    if ! curl -fL -o napcat.sh https://raw.githubusercontent.com/NapNeko/napcat-linux-installer/refs/heads/main/install.sh; then
+      echo "下载 napcat.sh 失败"
+      exit 1
+    fi
     if ! chmod +x napcat.sh; then
       echo "设置 napcat.sh 执行权限失败"
       exit 1
     fi
-    bash napcat.sh
+    if ! bash napcat.sh; then
+      echo "NapCat 上游安装脚本执行失败"
+      exit 1
+    fi
 
     # 环境管理的 NapCat 步骤只做安装，不做登录启动。
     # 有些上游安装脚本会在安装结束后顺手启动 QQ/NapCat，这里统一收掉，
     # 后续从主页账号卡片手动启动。
     pkill -f 'qq --no-sandbox' 2>/dev/null || true
     pkill -f 'NapCat' 2>/dev/null || true
-    pkill -f 'napcat' 2>/dev/null || true
+    pkill -f '/root/launcher_.*\.sh' 2>/dev/null || true
+    pkill -f '/root/launcher\.sh' 2>/dev/null || true
+    pkill -f 'napcat_instances/.*/launcher' 2>/dev/null || true
     
     # 恢复配置目录
     if [ -d "$HOME/napcat_config_backup" ]; then
@@ -293,6 +308,10 @@ EOF
   fi
 fi
   configure_napcat_token_ttl
+  if ! check_napcat_ready; then
+    echo "NapCat 安装不完整，请查看上方 apt/dpkg/curl 错误后重试"
+    exit 1
+  fi
   progress_echo "Napcat $L_INSTALLED"
 }
 
@@ -301,6 +320,61 @@ configure_napcat_token_ttl(){
     sed -i -E "s#static MAX_CREDENTIAL_VALID_SECONDS = [0-9]+#static MAX_CREDENTIAL_VALID_SECONDS = 604800#g" "$HOME/napcat/napcat.mjs"
     sed -i -E 's#Rp\.set\(`revoked:\$\{r\}`, !0, [0-9]+\)#Rp.set(`revoked:${r}`, !0, 604800)#g' "$HOME/napcat/napcat.mjs"
   fi
+}
+
+check_napcat_ready(){
+  local missing=0
+
+  if ! command -v qq >/dev/null 2>&1; then
+    echo "[AstrBot Android] missing NapCat dependency: qq"
+    missing=1
+  fi
+
+  if ! command -v Xvfb >/dev/null 2>&1; then
+    echo "[AstrBot Android] missing NapCat dependency: Xvfb"
+    missing=1
+  fi
+
+  if ! dpkg -s linuxqq 2>/dev/null | grep -q "Status: install ok installed"; then
+    echo "[AstrBot Android] missing or broken NapCat dependency: linuxqq"
+    missing=1
+  fi
+
+  if ! dpkg -s libnss3 2>/dev/null | grep -q "Status: install ok installed"; then
+    echo "[AstrBot Android] missing or broken NapCat dependency: libnss3"
+    missing=1
+  fi
+
+  if ! dpkg -s libnspr4 2>/dev/null | grep -q "Status: install ok installed"; then
+    echo "[AstrBot Android] missing or broken NapCat dependency: libnspr4"
+    missing=1
+  fi
+
+  if ! { dpkg -s libasound2t64 2>/dev/null || dpkg -s libasound2 2>/dev/null; } | grep -q "Status: install ok installed"; then
+    echo "[AstrBot Android] missing or broken NapCat dependency: libasound2/libasound2t64"
+    missing=1
+  fi
+
+  if [ ! -f "$HOME/launcher.sh" ]; then
+    echo "[AstrBot Android] missing NapCat launcher: $HOME/launcher.sh"
+    missing=1
+  fi
+
+  if [ ! -f "$HOME/libnapcat_launcher.so" ]; then
+    echo "[AstrBot Android] missing NapCat launcher library: $HOME/libnapcat_launcher.so"
+    missing=1
+  fi
+
+  if [ ! -d "$HOME/napcat" ]; then
+    echo "[AstrBot Android] missing NapCat directory: $HOME/napcat"
+    missing=1
+  fi
+
+  if [ "$missing" -ne 0 ]; then
+    return 1
+  fi
+
+  return 0
 }
 
 check_astrbot_ready(){

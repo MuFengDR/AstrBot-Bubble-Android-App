@@ -12,10 +12,36 @@ enum TerminalTabType {
   system, // 系统终端（可交互、可关闭）
 }
 
+class TerminalLogLimits {
+  static const int defaultPercent = 100;
+  static const int minPercent = 20;
+  static const int maxPercent = 200;
+  static const int stepPercent = 10;
+  static const int baseTerminalLines = 10000;
+  static const int baseLogChars = 120000;
+  static const int baseWriteBufferChars = 20000;
+
+  static final RxInt percent = defaultPercent.obs;
+
+  static int get maxTerminalLines =>
+      (baseTerminalLines * percent.value / 100).round();
+  static int get maxLogChars => (baseLogChars * percent.value / 100).round();
+  static int get maxWriteBufferChars =>
+      (baseWriteBufferChars * percent.value / 100).round();
+
+  static int normalizePercent(int value) {
+    final stepped = (value / stepPercent).round() * stepPercent;
+    return stepped.clamp(minPercent, maxPercent).toInt();
+  }
+
+  static String trimText(String text, int maxChars) {
+    if (text.length <= maxChars) return text;
+    return text.substring(text.length - maxChars);
+  }
+}
+
 /// 终端标签页数据模型
 class TerminalTab {
-  static const int _maxLogChars = 120000;
-
   final String id;
   final String title;
   final TerminalTabType type;
@@ -43,9 +69,14 @@ class TerminalTab {
         .replaceAll(RegExp(r'\x1B\[[0-9;?]*[ -/]*[@-~]'), '')
         .replaceAll('\r\n', '\n')
         .replaceAll('\r', '\n');
-    if (_logText.length > _maxLogChars) {
-      _logText = _logText.substring(_logText.length - _maxLogChars);
-    }
+    trimLog();
+  }
+
+  void trimLog() {
+    _logText = TerminalLogLimits.trimText(
+      _logText,
+      TerminalLogLimits.maxLogChars,
+    );
   }
 
   void clearLog() {
@@ -90,7 +121,7 @@ class TerminalTabManager extends GetxController {
 
       // 创建新的终端实例
       final newTerminal = Terminal(
-        maxLines: 10000,
+        maxLines: TerminalLogLimits.maxTerminalLines,
       );
 
       // 创建新的PTY实例
@@ -174,7 +205,7 @@ class TerminalTabManager extends GetxController {
   }) async {
     try {
       final tabId = 'command_${DateTime.now().millisecondsSinceEpoch}';
-      final newTerminal = Terminal(maxLines: 10000);
+      final newTerminal = Terminal(maxLines: TerminalLogLimits.maxTerminalLines);
       final newPty = createPTY(
         rows: newTerminal.viewHeight,
         columns: newTerminal.viewWidth,
@@ -294,6 +325,12 @@ class TerminalTabManager extends GetxController {
       return tabs[activeTabIndex.value];
     }
     return null;
+  }
+
+  void trimAllLogs() {
+    for (final tab in tabs) {
+      tab.trimLog();
+    }
   }
 
   @override

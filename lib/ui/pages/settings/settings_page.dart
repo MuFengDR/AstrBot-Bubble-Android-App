@@ -131,6 +131,60 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  Widget _buildHomeFontScaleStepper(HomeController controller) {
+    final scale = controller.homeFontScale.value;
+    final percent = (scale * 100).round();
+    const step = 0.05;
+    const minScale = 0.25;
+    const maxScale = 1.25;
+    return ListTile(
+      leading: const Icon(Icons.format_size),
+      title: Row(
+        children: [
+          const Expanded(child: Text('主页字体大小')),
+          Text('$percent%'),
+        ],
+      ),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('调整主页卡片、按钮和账号信息文字大小'),
+          Row(
+            children: [
+              IconButton(
+                tooltip: '缩小',
+                onPressed: scale <= minScale
+                    ? null
+                    : () => controller.setHomeFontScale(scale - step),
+                icon: const Icon(Icons.remove),
+              ),
+              Expanded(
+                child: Text(
+                  '$percent%',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+              IconButton(
+                tooltip: '放大',
+                onPressed: scale >= maxScale
+                    ? null
+                    : () => controller.setHomeFontScale(scale + step),
+                icon: const Icon(Icons.add),
+              ),
+              TextButton(
+                onPressed: scale == 1.0
+                    ? null
+                    : () => controller.setHomeFontScale(1.0),
+                child: const Text('默认'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   void _disposeTextControllersSafely(
     List<TextEditingController> controllers,
   ) {
@@ -1054,6 +1108,10 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
             onTap: _pickHomeBackground,
           );
+        }),
+        Obx(() {
+          final controller = Get.find<HomeController>();
+          return _buildHomeFontScaleStepper(controller);
         }),
         Obx(() {
           final controller = Get.find<HomeController>();

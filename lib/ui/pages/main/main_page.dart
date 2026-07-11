@@ -21,7 +21,6 @@ class _MainPageState extends State<MainPage> {
   final HomeController homeController = Get.put(HomeController());
   Worker? _mainTabWorker;
   int _currentIndex = 0;
-  bool _showSettings = false;
 
   @override
   void initState() {
@@ -41,21 +40,50 @@ class _MainPageState extends State<MainPage> {
 
   void _openTab(int index) {
     setState(() {
-      _showSettings = false;
       _currentIndex = index;
     });
   }
 
   void _openSettings() {
-    setState(() {
-      _showSettings = true;
-    });
+    Navigator.of(context).push(_buildSettingsRoute());
   }
 
   void _closeSettings() {
-    setState(() {
-      _showSettings = false;
-    });
+    Navigator.of(context).maybePop();
+  }
+
+  Route<void> _buildSettingsRoute() {
+    return PageRouteBuilder<void>(
+      transitionDuration: const Duration(milliseconds: 220),
+      reverseTransitionDuration: const Duration(milliseconds: 200),
+      pageBuilder: (context, animation, secondaryAnimation) {
+        return Obx(
+          () => BubbleBackground(
+            imagePath: homeController.homeBackgroundPath.value,
+            child: Scaffold(
+              backgroundColor: Colors.transparent,
+              body: _buildSettingsPage(),
+            ),
+          ),
+        );
+      },
+      transitionsBuilder: (context, animation, secondaryAnimation, child) {
+        final slideAnimation = Tween<Offset>(
+          begin: const Offset(1, 0),
+          end: Offset.zero,
+        ).animate(
+          CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+            reverseCurve: Curves.easeInCubic,
+          ),
+        );
+        return SlideTransition(
+          position: slideAnimation,
+          child: child,
+        );
+      },
+    );
   }
 
   @override
@@ -66,47 +94,51 @@ class _MainPageState extends State<MainPage> {
         child: Scaffold(
           backgroundColor: Colors.transparent,
           extendBody: true,
-          body: _showSettings ? _buildSettingsPage() : _buildMainTabs(),
-          bottomNavigationBar: _showSettings ? null : _buildBottomNav(context),
+          body: _buildMainTabs(),
+          bottomNavigationBar: _buildBottomNav(context),
         ),
       ),
     );
   }
 
   Widget _buildSettingsPage() {
-    return Stack(
-      children: [
-        Positioned.fill(
-          child: ColoredBox(
-            color: Colors.white.withValues(
-              alpha: homeController.statusOverlayOpacity.value,
+    return SizedBox.expand(
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: ColoredBox(
+              color: Colors.white.withValues(
+                alpha: homeController.statusOverlayOpacity.value,
+              ),
             ),
           ),
-        ),
-        Column(
-          children: [
-            GlassAppBar(
-              title: '设置',
-              opacity: homeController.topNavGlassOpacity.value,
-              blur: homeController.glassBlurAmount.value * 30,
-              leading: IconButton(
-                icon: const Icon(Icons.arrow_back),
-                onPressed: _closeSettings,
+          Column(
+            children: [
+              GlassAppBar(
+                title: '设置',
+                opacity: homeController.topNavGlassOpacity.value,
+                blur: homeController.glassBlurAmount.value * 30,
+                leading: IconButton(
+                  icon: const Icon(Icons.arrow_back),
+                  onPressed: _closeSettings,
+                ),
               ),
-            ),
-            Expanded(
-              child: SettingsPage(
-                astrBotController: WebViewPage.astrBotController,
-                napCatController: WebViewPage.napCatController,
+              Expanded(
+                child: SettingsPage(
+                  astrBotController: WebViewPage.astrBotController,
+                  napCatController: WebViewPage.napCatController,
+                ),
               ),
-            ),
-          ],
-        ),
-      ],
+            ],
+          ),
+        ],
+      ),
     );
   }
 
   Widget _buildMainTabs() {
+    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final webViewBottomInset = keyboardVisible ? 0.0 : _bottomNavReservedHeight;
     return SafeArea(
       bottom: false,
       child: IndexedStack(
@@ -116,9 +148,9 @@ class _MainPageState extends State<MainPage> {
             onNavigate: _openTab,
             onOpenSettings: _openSettings,
           ),
-          const WebViewPage(
+          WebViewPage(
             embedded: true,
-            bottomContentInset: _bottomNavReservedHeight,
+            bottomContentInset: webViewBottomInset,
           ),
           const TerminalTabView(),
         ],

@@ -227,6 +227,9 @@ class _TerminalTabViewState extends State<TerminalTabView> {
                       _buildFontSizeMenuItem(
                         onChanged: () => setSheetState(() {}),
                       ),
+                      _buildLogLimitMenuItem(
+                        onChanged: () => setSheetState(() {}),
+                      ),
                       const Divider(height: 20),
                       ListTile(
                         leading: const Icon(Icons.ios_share),
@@ -244,6 +247,57 @@ class _TerminalTabViewState extends State<TerminalTabView> {
           },
         );
       },
+    );
+  }
+
+  Widget _buildLogLimitMenuItem({required VoidCallback onChanged}) {
+    final percent = TerminalLogLimits.percent.value;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      child: Row(
+        children: [
+          const Icon(Icons.storage_outlined),
+          const SizedBox(width: 16),
+          const Expanded(
+            child: Text(
+              '日志上限',
+              style: TextStyle(fontSize: 16),
+            ),
+          ),
+          IconButton(
+            tooltip: '减少',
+            onPressed: percent <= TerminalLogLimits.minPercent
+                ? null
+                : () {
+                    homeController.setTerminalLogLimitPercent(
+                      percent - TerminalLogLimits.stepPercent,
+                    );
+                    onChanged();
+                  },
+            icon: const Icon(Icons.remove),
+          ),
+          SizedBox(
+            width: 58,
+            child: Text(
+              '$percent%',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ),
+          IconButton(
+            tooltip: '增加',
+            onPressed: percent >= TerminalLogLimits.maxPercent
+                ? null
+                : () {
+                    homeController.setTerminalLogLimitPercent(
+                      percent + TerminalLogLimits.stepPercent,
+                    );
+                    onChanged();
+                  },
+            icon: const Icon(Icons.add),
+          ),
+        ],
+      ),
     );
   }
 

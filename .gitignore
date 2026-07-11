@@ -188,3 +188,8 @@ key.properties
 
 /.trae/
 /.claude/
+
+# Local build notes
+LOCAL_BUILD_SCRIPTS.md
+build_release_apk.bat
+build_debug_apk.bat

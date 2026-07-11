@@ -9,6 +9,7 @@ class UiPreferences {
       'status_overlay_opacity'.setting;
   static SettingNode get _terminalOverlayOpacity =>
       'terminal_overlay_opacity'.setting;
+  static SettingNode get _homeFontScale => 'home_font_scale'.setting;
 
   static String get homeBackgroundPath =>
       _homeBackgroundPath.get()?.toString() ?? '';
@@ -20,6 +21,7 @@ class UiPreferences {
       _readOpacity(_statusOverlayOpacity, 0.38);
   static double get terminalOverlayOpacity =>
       _readOpacity(_terminalOverlayOpacity, 0.55);
+  static double get homeFontScale => _readHomeFontScale(_homeFontScale, 1.0);
 
   static void saveHomeBackgroundPath(String path) {
     _homeBackgroundPath.set(path);
@@ -49,6 +51,10 @@ class UiPreferences {
     _terminalOverlayOpacity.set(_normalizeOpacity(value));
   }
 
+  static void saveHomeFontScale(double value) {
+    _homeFontScale.set(_normalizeHomeFontScale(value));
+  }
+
   static double _readOpacity(SettingNode node, double fallback) {
     final value = node.get();
     final opacity = value is num
@@ -73,5 +79,18 @@ class UiPreferences {
 
   static double _normalizePercent(double value) {
     return value.clamp(0.0, 1.0).toDouble();
+  }
+
+  static double _readHomeFontScale(SettingNode node, double fallback) {
+    final value = node.get();
+    final scale = value is num
+        ? value.toDouble()
+        : double.tryParse(value?.toString() ?? '');
+    if (scale == null) return fallback;
+    return _normalizeHomeFontScale(scale);
+  }
+
+  static double _normalizeHomeFontScale(double value) {
+    return value.clamp(0.25, 1.25).toDouble();
   }
 }
