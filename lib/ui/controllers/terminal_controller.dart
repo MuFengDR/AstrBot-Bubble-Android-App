@@ -83,6 +83,7 @@ class AstrBotOneBotAdapter {
 enum BotBindingConfigState {
   unconfigured,
   configured,
+  disabled,
   mismatch,
 }
 
@@ -855,6 +856,10 @@ class HomeController extends GetxController {
     );
   }
 
+  Future<void> prepareTerminalEnvironment() async {
+    await _prepareEnvironmentScripts();
+  }
+
   @override
   void onInit() {
     super.onInit();
@@ -1478,6 +1483,9 @@ class HomeController extends GetxController {
       return BotBindingConfigState.unconfigured;
     }
     if (client.port == adapter.port && client.token == adapter.token) {
+      if (!client.enabled || !adapter.enabled) {
+        return BotBindingConfigState.disabled;
+      }
       return BotBindingConfigState.configured;
     }
     return BotBindingConfigState.mismatch;

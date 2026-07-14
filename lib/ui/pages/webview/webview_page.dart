@@ -14,6 +14,7 @@ import '../terminal/terminal_tab_view.dart';
 import '../../navbar/bottom_nav_bar.dart';
 import '../../../core/services/password_manager.dart';
 import '../../../core/config/service_ports.dart';
+import '../../../core/config/ui_preferences.dart';
 
 class WebViewPage extends StatefulWidget {
   final bool embedded;
@@ -59,6 +60,7 @@ class _WebViewPageState extends State<WebViewPage> {
   @override
   void initState() {
     super.initState();
+    _webUiZoomLevels.addAll(UiPreferences.webUiZoomLevels);
     final args = Get.arguments;
     if (args is Map && args['openSettings'] == true) {
       _currentIndex = 9999;
@@ -1287,6 +1289,7 @@ class _WebViewPageState extends State<WebViewPage> {
       _webUiZoomLevels[target.id] = normalizedZoom;
       _webUiZoomLevels['custom:${target.url}'] = normalizedZoom;
     });
+    UiPreferences.saveWebUiZoomLevels(_webUiZoomLevels);
     await _applyWebUiZoom(target.id, target.controller);
   }
 
@@ -1346,4 +1349,3 @@ class _WebUiTarget {
     this.customWebViewIndex,
   });
 }
-

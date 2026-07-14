@@ -152,7 +152,10 @@ class _MainPageState extends State<MainPage> {
             embedded: true,
             bottomContentInset: webViewBottomInset,
           ),
-          const TerminalTabView(),
+          TerminalTabView(
+            bottomContentInset:
+                keyboardVisible ? 0 : _bottomNavReservedHeight,
+          ),
         ],
       ),
     );

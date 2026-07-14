@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:get/get.dart';
@@ -114,6 +115,8 @@ class TerminalTabManager extends GetxController {
 
   /// 添加新的系统终端标签页
   Future<void> addSystemTerminalTab() async {
+    Pty? newPty;
+    StreamSubscription<String>? outputSubscription;
     try {
       final newIndex =
           tabs.where((t) => t.type == TerminalTabType.system).length + 1;
@@ -125,32 +128,44 @@ class TerminalTabManager extends GetxController {
       );
 
       // 创建新的PTY实例
-      final newPty = createPTY(
+      final pty = createPTY(
         rows: newTerminal.viewHeight,
         columns: newTerminal.viewWidth,
       );
+      newPty = pty;
 
       // 标志：是否已经创建了标签页
       var tabCreated = false;
       TerminalTab? createdTab;
+      const readyMarker = '__ASTRBOT_TERMINAL_READY__';
+      final ready = Completer<void>();
+      final startupOutput = StringBuffer();
 
       // 连接终端的 onResize 和 onOutput 事件（需要在监听输出前就连接好）
       newTerminal.onResize = (width, height, pixelWidth, pixelHeight) {
-        newPty.resize(height, width);
+        pty.resize(height, width);
       };
 
       newTerminal.onOutput = (data) {
-        newPty.writeString(data);
+        pty.writeString(data);
       };
 
       // 监听PTY输出，等待登录完成后再创建标签页
-      newPty.output
+      outputSubscription = pty.output
           .cast<List<int>>()
           .transform(const Utf8Decoder(allowMalformed: true))
           .listen((event) {
-        // 检测是否包含 root@localhost 提示符
-        if (!tabCreated && event.contains('root@localhost')) {
+        var visibleEvent = event;
+        if (!tabCreated) {
+          startupOutput.write(event);
+          final combinedOutput = startupOutput.toString();
+          final markerIndex = combinedOutput.indexOf(readyMarker);
+          if (markerIndex < 0) return;
+
           tabCreated = true;
+          visibleEvent = combinedOutput
+              .substring(markerIndex + readyMarker.length)
+              .replaceFirst(RegExp(r'^\r?\n?'), '');
 
           // 创建新标签页
           final newTab = TerminalTab(
@@ -159,7 +174,7 @@ class TerminalTabManager extends GetxController {
             type: TerminalTabType.system,
             terminal: newTerminal,
             controller: TerminalController(),
-            pty: newPty,
+            pty: pty,
             isActive: false,
           );
           createdTab = newTab;
@@ -176,22 +191,44 @@ class TerminalTabManager extends GetxController {
 
           Log.i('添加新系统终端标签页: ${newTab.title} (ID: ${newTab.id})',
               tag: 'TerminalTabManager');
-          // 不要 return，继续处理后续输出
+          if (!ready.isCompleted) ready.complete();
         }
 
         // 标签页创建后，正常输出所有内容
-        if (tabCreated) {
-          createdTab?.appendLog(event);
-          newTerminal.write(event);
+        if (tabCreated && visibleEvent.isNotEmpty) {
+          createdTab?.appendLog(visibleEvent);
+          newTerminal.write(visibleEvent);
         }
-        // 标签页创建前，不输出任何内容（跳过登录过程的输出）
+      }, onDone: () {
+        if (!ready.isCompleted) {
+          ready.completeError('终端进程提前退出');
+        }
+      }, onError: (Object error, StackTrace stackTrace) {
+        if (!ready.isCompleted) {
+          ready.completeError('终端进程异常：$error', stackTrace);
+        }
       });
 
       // 登录到ubuntu容器
-      final command =
-          'source ${RuntimeEnvir.homePath}/common.sh\nlogin_ubuntu "bash" \n';
-      newPty.writeString(command);
+      final command = 'source ${RuntimeEnvir.homePath}/common.sh\n'
+          'login_ubuntu "printf \'__ASTRBOT_%s__\\n\' \'TERMINAL_READY\'; '
+          'exec /bin/bash -il"\n';
+      pty.writeString(command);
+      await ready.future.timeout(
+        const Duration(seconds: 20),
+        onTimeout: () {
+          final rawDetails = startupOutput.toString().trim();
+          final details = rawDetails.length <= 500
+              ? rawDetails
+              : rawDetails.substring(rawDetails.length - 500);
+          throw details.isEmpty
+              ? '进入 Ubuntu 终端超时，请先完成环境安装'
+              : '进入 Ubuntu 终端失败：$details';
+        },
+      );
     } catch (e) {
+      await outputSubscription?.cancel();
+      newPty?.kill();
       Log.e('添加系统终端标签页失败: $e', tag: 'TerminalTabManager');
       Get.snackbar('错误', '创建终端失败: $e');
     }

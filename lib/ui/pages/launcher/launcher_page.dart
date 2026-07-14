@@ -28,12 +28,20 @@ class _LauncherPageState extends State<LauncherPage>
   final Map<String, _NapCatAccountOperation> _napCatBusyOperations = {};
   final Map<String, BotBindingConfigState> _botBindingStates = {};
   final Set<String> _botBindingStateLoading = {};
+  final Map<String, int> _botBindingRefreshVersions = {};
+  final Set<String> _runningNapCatIds = {};
+  Worker? _napCatInstancesWorker;
   bool _checkingEnvironment = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _runningNapCatIds.addAll(_currentRunningNapCatIds());
+    _napCatInstancesWorker = ever(
+      homeController.napCatInstances,
+      _handleNapCatInstancesChanged,
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _refreshEnvironmentStatus();
       _refreshAllBotBindingStates();
@@ -42,6 +50,7 @@ class _LauncherPageState extends State<LauncherPage>
 
   @override
   void dispose() {
+    _napCatInstancesWorker?.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -576,6 +585,10 @@ class _LauncherPageState extends State<LauncherPage>
                             const SizedBox(width: 8),
                             _buildBotBindingStatusChip(
                               running ? bindingState : null,
+                              refreshing: _botBindingStateLoading.contains(id),
+                              onTap: running && canBindBot
+                                  ? () => _refreshBotBindingState(instance)
+                                  : null,
                             ),
                           ],
                         ),
@@ -652,7 +665,10 @@ class _LauncherPageState extends State<LauncherPage>
                               value: 'bindBot',
                               enabled: canBindBot,
                               child: Text(
-                                bindingState == BotBindingConfigState.configured
+                                bindingState ==
+                                            BotBindingConfigState.configured ||
+                                        bindingState ==
+                                            BotBindingConfigState.disabled
                                     ? '管理 BOT 绑定'
                                     : '绑定 BOT',
                               ),
@@ -691,42 +707,103 @@ class _LauncherPageState extends State<LauncherPage>
     widget.onNavigate?.call(1);
   }
 
-  Widget _buildBotBindingStatusChip(BotBindingConfigState? state) {
+  Widget _buildBotBindingStatusChip(
+    BotBindingConfigState? state, {
+    required bool refreshing,
+    VoidCallback? onTap,
+  }) {
     final color = switch (state) {
       BotBindingConfigState.configured => Colors.green,
+      BotBindingConfigState.disabled => Colors.red,
       BotBindingConfigState.mismatch => Colors.orange,
       BotBindingConfigState.unconfigured => Colors.red,
       null => Colors.grey,
     };
     final text = switch (state) {
       BotBindingConfigState.configured => '已绑定BOT',
+      BotBindingConfigState.disabled => '已禁用BOT',
       BotBindingConfigState.mismatch => 'BOT绑定异常',
       BotBindingConfigState.unconfigured => '未绑定BOT',
       null => '未运行',
     };
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withValues(alpha: 0.22)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.circle, size: 9, color: color),
-          const SizedBox(width: 5),
-          Text(
-            text,
-            style: TextStyle(
-              color: color,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
+    final borderRadius = BorderRadius.circular(999);
+    final chip = Material(
+      color: Colors.transparent,
+      child: Ink(
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.10),
+          borderRadius: borderRadius,
+          border: Border.all(color: color.withValues(alpha: 0.22)),
+        ),
+        child: InkWell(
+          borderRadius: borderRadius,
+          onTap: refreshing ? null : onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.circle, size: 9, color: color),
+                const SizedBox(width: 5),
+                Text(
+                  text,
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
             ),
           ),
-        ],
+        ),
       ),
     );
+    if (onTap == null) return chip;
+    return Tooltip(
+      message: refreshing ? '正在刷新状态' : '点击刷新状态',
+      child: chip,
+    );
+  }
+
+  Set<String> _currentRunningNapCatIds() {
+    return homeController.napCatInstances
+        .where((instance) => instance['running'] == true)
+        .map((instance) => instance['id']?.toString() ?? '')
+        .where((id) => id.isNotEmpty)
+        .toSet();
+  }
+
+  void _handleNapCatInstancesChanged(List<Map<String, dynamic>> instances) {
+    final runningIds = instances
+        .where((instance) => instance['running'] == true)
+        .map((instance) => instance['id']?.toString() ?? '')
+        .where((id) => id.isNotEmpty)
+        .toSet();
+    final stoppedIds = _runningNapCatIds.difference(runningIds);
+    final startedIds = runningIds.difference(_runningNapCatIds);
+
+    for (final id in stoppedIds) {
+      _invalidateBotBindingState(id);
+    }
+    _runningNapCatIds
+      ..clear()
+      ..addAll(runningIds);
+
+    for (final instance in instances) {
+      final id = instance['id']?.toString() ?? '';
+      final qq = instance['qq']?.toString().trim() ?? '';
+      if (startedIds.contains(id) && qq.isNotEmpty) {
+        _refreshBotBindingState(instance);
+      }
+    }
+  }
+
+  void _invalidateBotBindingState(String id) {
+    _botBindingRefreshVersions[id] =
+        (_botBindingRefreshVersions[id] ?? 0) + 1;
+    _botBindingStateLoading.remove(id);
+    _botBindingStates.remove(id);
   }
 
   void _ensureBotBindingState(Map<String, dynamic> instance) {
@@ -743,35 +820,55 @@ class _LauncherPageState extends State<LauncherPage>
     for (final instance in homeController.napCatInstances) {
       final qq = instance['qq']?.toString().trim() ?? '';
       if (qq.isNotEmpty && instance['running'] == true) {
-        _refreshBotBindingState(instance, force: true);
+        _refreshBotBindingState(instance);
       }
     }
   }
 
   Future<void> _refreshBotBindingState(
-    Map<String, dynamic> instance, {
-    bool force = false,
-  }) async {
+    Map<String, dynamic> instance,
+  ) async {
     final id = instance['id']?.toString() ?? '';
     if (id.isEmpty) return;
-    if (_botBindingStateLoading.contains(id)) {
-      if (!force) return;
-      _botBindingStateLoading.remove(id);
-    }
+    if (_botBindingStateLoading.contains(id)) return;
+    final refreshVersion = (_botBindingRefreshVersions[id] ?? 0) + 1;
+    _botBindingRefreshVersions[id] = refreshVersion;
     _botBindingStateLoading.add(id);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted &&
+          _botBindingRefreshVersions[id] == refreshVersion &&
+          _botBindingStateLoading.contains(id)) {
+        setState(() {});
+      }
+    });
     try {
       final data = await _loadBotBindingData(instance);
-      if (!mounted) return;
+      if (!mounted || _botBindingRefreshVersions[id] != refreshVersion) {
+        return;
+      }
+      final current = homeController.napCatInstances.firstWhereOrNull(
+        (item) => item['id']?.toString() == id,
+      );
+      if (current == null || current['running'] != true) return;
       setState(() {
         _botBindingStates[id] = data.state;
       });
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || _botBindingRefreshVersions[id] != refreshVersion) {
+        return;
+      }
+      final current = homeController.napCatInstances.firstWhereOrNull(
+        (item) => item['id']?.toString() == id,
+      );
+      if (current == null || current['running'] != true) return;
       setState(() {
         _botBindingStates[id] = BotBindingConfigState.unconfigured;
       });
     } finally {
-      _botBindingStateLoading.remove(id);
+      if (_botBindingRefreshVersions[id] == refreshVersion) {
+        _botBindingStateLoading.remove(id);
+        if (mounted) setState(() {});
+      }
     }
   }
 
@@ -954,17 +1051,19 @@ class _LauncherPageState extends State<LauncherPage>
         },
       ),
     );
-    await _refreshBotBindingState(instance, force: true);
+    await _refreshBotBindingState(instance);
   }
 
   Widget _buildBindingStatusBanner(BotBindingConfigState state) {
     final color = switch (state) {
       BotBindingConfigState.configured => Colors.green,
+      BotBindingConfigState.disabled => Colors.red,
       BotBindingConfigState.mismatch => Colors.orange,
       BotBindingConfigState.unconfigured => Colors.red,
     };
     final text = switch (state) {
       BotBindingConfigState.configured => '已绑定BOT',
+      BotBindingConfigState.disabled => '已禁用BOT',
       BotBindingConfigState.mismatch => 'BOT绑定异常',
       BotBindingConfigState.unconfigured => '未绑定BOT',
     };
