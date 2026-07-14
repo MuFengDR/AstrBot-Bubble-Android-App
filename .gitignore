@@ -193,3 +193,6 @@ key.properties
 LOCAL_BUILD_SCRIPTS.md
 build_release_apk.bat
 build_debug_apk.bat
+
+# work space
+temp/

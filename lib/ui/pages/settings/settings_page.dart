@@ -36,6 +36,7 @@ class _SettingsPageState extends State<SettingsPage> {
   static const String _backupFileSuffix = '.tar.gz';
 
   String _appVersion = '';
+  String _webViewKernelInfo = '';
   bool _isBatteryOptimizationIgnored = false;
 
   // 存储从GitHub API获取的原始下载URL
@@ -45,6 +46,7 @@ class _SettingsPageState extends State<SettingsPage> {
   void initState() {
     super.initState();
     _loadAppVersion();
+    _loadWebViewKernelInfo();
     _checkBatteryOptimizationStatus();
   }
 
@@ -57,6 +59,28 @@ class _SettingsPageState extends State<SettingsPage> {
 
   String _displayVersion(String version) {
     return version.split('+').first.replaceAll('-', ' ');
+  }
+
+  Future<void> _loadWebViewKernelInfo() async {
+    if (!Platform.isAndroid) return;
+    try {
+      const channel = MethodChannel('astrbot_channel');
+      final info = await channel.invokeMapMethod<String, dynamic>(
+        'webview_kernel_info',
+      );
+      if (!mounted || info == null) return;
+      final source = info['source'] == 'bundled' ? '内置' : '系统';
+      final packageName = info['packageName']?.toString() ?? '';
+      final version = info['version']?.toString() ?? '';
+      setState(() {
+        _webViewKernelInfo = '$source · $packageName · $version';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _webViewKernelInfo = '读取失败：$e';
+      });
+    }
   }
 
   Future<void> _pickHomeBackground() async {
@@ -1091,6 +1115,14 @@ class _SettingsPageState extends State<SettingsPage> {
             _appVersion.isEmpty ? '加载中...' : '$_appVersion（点击检查更新）',
           ),
           onTap: () => _checkForUpdates(),
+        ),
+        ListTile(
+          leading: const Icon(Icons.web_asset_outlined),
+          title: const Text('WebView 内核（实验）'),
+          subtitle: Text(
+            _webViewKernelInfo.isEmpty ? '加载中...' : _webViewKernelInfo,
+          ),
+          onTap: _loadWebViewKernelInfo,
         ),
         Obx(() {
           final backgroundPath =

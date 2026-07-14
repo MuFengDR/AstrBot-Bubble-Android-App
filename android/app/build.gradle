@@ -48,6 +48,12 @@ android {
         disable 'InvalidPackage'
     }
 
+    // WebViewUpgrade uses AssetManager.openFd, so the bundled kernel APK
+    // must remain uncompressed inside the host APK.
+    aaptOptions {
+        noCompress 'apk'
+    }
+
     flavorDimensions "distribution"
     productFlavors {
         normal {
@@ -65,6 +71,7 @@ android {
             signingConfig hasKeystoreFile ? signingConfigs.release : signingConfigs.debug
             minifyEnabled true
             shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             // 禁用对特定原生库的strip操作，避免处理错误
             packagingOptions {
                 doNotStrip '**/libsudo.so'
@@ -109,6 +116,7 @@ flutter {
 }
 dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+    implementation project(':webviewup-core')
 
 // implementation fileTree(include: ['*.jar', '*aar'], dir: 'libs')
 }
