@@ -244,6 +244,15 @@ abstract class AbstractWebViewPackageManagerHook extends BinderHook {
         // assets/icudtl.dat，进而 Chromium 无法向渲染进程发送 ICU fd。
         packageInfo.applicationInfo.sourceDir = apkPath;
         packageInfo.applicationInfo.publicSourceDir = apkPath;
+        // Archive package metadata has no installed-app data directory. Android 14
+        // dereferences dataDir while createPackageContext builds its LoadedApk.
+        ApplicationInfo hostAppInfo = context.getApplicationInfo();
+        packageInfo.applicationInfo.uid = hostAppInfo.uid;
+        packageInfo.applicationInfo.dataDir = hostAppInfo.dataDir;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            packageInfo.applicationInfo.deviceProtectedDataDir =
+                    hostAppInfo.deviceProtectedDataDir;
+        }
         packageInfo.applicationInfo.flags |= ApplicationInfo.FLAG_INSTALLED
                 | ApplicationInfo.FLAG_HAS_CODE;
 
