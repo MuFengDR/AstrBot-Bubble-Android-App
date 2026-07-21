@@ -135,12 +135,12 @@ network_test() {
         return 0
     fi
 
-    proxy_arr=("https://ghfast.top" "https://gh.wuliya.xin" "https://gh-proxy.com" "https://github.moeyy.xyz")
-    check_url="https://raw.githubusercontent.com/NapNeko/NapCatQQ/main/package.json"
+    proxy_arr=("https://ghfast.top" "https://gh-proxy.com" "https://ghproxy.net" "https://ghproxy.cc" "https://gh.dpik.top" "https://gh.monlor.com" "https://gh.chjina.com" "https://github.boki.moe" "https://gh.jasonzeng.dev" "https://gh.geekertao.top" "https://gh.nxnow.top" "https://down.npee.cn")
+    check_url="https://raw.githubusercontent.com/astral-sh/uv/main/README.md"
 
     for proxy in "${proxy_arr[@]}"; do
         echo "测试代理: ${proxy}"
-        status=$(curl -k -L --connect-timeout ${timeout} --max-time $((timeout*2)) -o /dev/null -s -w "%{http_code}" "${proxy}/${check_url}")
+        status=$(curl -fL --connect-timeout ${timeout} --max-time $((timeout*2)) -o /dev/null -s -w "%{http_code}" "${proxy}/${check_url}")
         curl_exit=$?
         if [ $curl_exit -ne 0 ]; then
             echo "代理 ${proxy} 测试失败或超时，错误码: $curl_exit"
@@ -156,7 +156,7 @@ network_test() {
 
     if [ ${found} -eq 0 ]; then
         echo "警告: 无法找到可用的Github代理，将尝试直连..."
-        status=$(curl -k --connect-timeout ${timeout} --max-time $((timeout*2)) -o /dev/null -s -w "%{http_code}" "${check_url}")
+        status=$(curl -fL --connect-timeout ${timeout} --max-time $((timeout*2)) -o /dev/null -s -w "%{http_code}" "${check_url}")
         if [ $? -eq 0 ] && [ "${status}" = "200" ]; then
             echo "直连Github成功，将不使用代理"
             target_proxy=""
@@ -226,16 +226,232 @@ install_uv(){
   fi
 }
 
+linuxqq_ready(){
+  command -v qq >/dev/null 2>&1 &&
+    dpkg-query -W -f='${Status}\n' linuxqq 2>/dev/null | grep -qx 'install ok installed'
+}
+
+prepare_apt_downloads(){
+  local file changed=0
+  export DEBIAN_FRONTEND=noninteractive
+  mkdir -p /etc/apt/apt.conf.d
+  printf 'Acquire::ForceIPv4 "true";\nAcquire::Retries "3";\n' > /etc/apt/apt.conf.d/99astrbot-force-ipv4
+  for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+    [ -f "$file" ] || continue
+    if grep -q 'http://mirrors\.tuna\.tsinghua\.edu\.cn' "$file"; then
+      sed -i 's#http://mirrors\.tuna\.tsinghua\.edu\.cn#https://mirrors.tuna.tsinghua.edu.cn#g' "$file"
+      changed=1
+    fi
+  done
+  if [ "$changed" -eq 1 ]; then
+    echo "已将 Ubuntu 清华软件源切换为 HTTPS，正在刷新索引..."
+    apt-get -o Acquire::ForceIPv4=true update
+  fi
+}
+
+validate_linuxqq_deb(){
+  local file="$1" arch package
+  [ -s "$file" ] || return 1
+  dpkg-deb --info "$file" >/dev/null 2>&1 || return 1
+  dpkg-deb --contents "$file" >/dev/null 2>&1 || return 1
+  arch=$(dpkg-deb -f "$file" Architecture 2>/dev/null)
+  package=$(dpkg-deb -f "$file" Package 2>/dev/null)
+  case "$arch" in arm64|aarch64) ;; *) return 1 ;; esac
+  [ "$package" = "linuxqq" ]
+}
+
+use_local_linuxqq_deb(){
+  local dest="$1" candidate
+  for candidate in "${ASTRBOT_LINUXQQ_FILE:-}" /sdcard/Download/*.deb /storage/emulated/0/Download/*.deb; do
+    [ -n "$candidate" ] && [ -f "$candidate" ] || continue
+    validate_linuxqq_deb "$candidate" || continue
+    echo "发现本地 LinuxQQ 安装包: $candidate"
+    cp -f "$candidate" "$dest"
+    return $?
+  done
+  return 1
+}
+
+get_linuxqq_signed_url(){
+  local bare_url="$1"
+  local api_url="https://im.qq.com/http2rpc/gotrpc/noauth/trpc.qqntv2.urlsign.UrlSign/GetSign"
+  local response_file="$TMPDIR/linuxqq-sign.json"
+  local normalized_file="$TMPDIR/linuxqq-sign-normalized.json"
+  local payload
+  LINUXQQ_SIGNED_URL=""
+  payload=$(printf '{"url":"%s"}' "$bare_url")
+  echo "正在向 LinuxQQ 官网申请临时下载签名..."
+  if ! curl -fL --connect-timeout 15 --max-time 30 \
+      -A 'Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 Chrome/124 Safari/537.36' \
+      -e 'https://im.qq.com/' \
+      -H 'Accept: application/json, text/plain, */*' \
+      -H 'Content-Type: application/json' \
+      -H 'x-oidb: {"uint32_command":"0x9b8e","uint32_service_type":1}' \
+      --data "$payload" "$api_url" -o "$response_file"; then
+    echo "获取 LinuxQQ 临时下载签名失败"
+    return 1
+  fi
+  sed 's#\\/#/#g; s#\\u0026#\&#g; s#\\u003d#=#g' "$response_file" > "$normalized_file"
+  LINUXQQ_SIGNED_URL=$(grep -Eo '"url"[[:space:]]*:[[:space:]]*"[^"]+"' "$normalized_file" |
+    head -n 1 | sed -E 's/^"url"[[:space:]]*:[[:space:]]*"//; s/"$//')
+case "$LINUXQQ_SIGNED_URL" in
+https://*.deb|https://*.deb\?*) return 0 ;;
+    *)
+      echo "LinuxQQ 签名接口未返回有效下载地址"
+      cat "$response_file" 2>/dev/null || true
+      LINUXQQ_SIGNED_URL=""
+      return 1
+      ;;
+  esac
+}
+
+install_linuxqq(){
+  if linuxqq_ready; then
+    echo "LinuxQQ 已安装"
+    return 0
+  fi
+
+  local config_url="${ASTRBOT_LINUXQQ_CONFIG_URL:-https://cdn-go.cn/qq-web/im.qq.com_new/latest/rainbow/linuxConfig.js}"
+  local config_file="$TMPDIR/linuxqq-config.js"
+  local normalized_config="$TMPDIR/linuxqq-config-normalized.js"
+  local qq_deb="$HOME/QQ.deb"
+  local qq_deb_part="${qq_deb}.part"
+  local qq_url="${ASTRBOT_LINUXQQ_URL:-}"
+  local package_arch package_name sound_package download_url
+
+echo "[AstrBot Android] LinuxQQ 修复流程 v9"
+  progress_echo "LinuxQQ 安装中"
+  rm -f "$config_file" "$normalized_config" "$qq_deb_part"
+
+  if [ -z "$qq_url" ]; then
+    echo "正在读取 LinuxQQ 官方发布配置..."
+    if ! curl -fL --connect-timeout 15 --max-time 60 "$config_url" -o "$config_file"; then
+      echo "获取 LinuxQQ 官方发布配置失败: $config_url"
+      return 1
+    fi
+    sed 's#\\/#/#g' "$config_file" > "$normalized_config"
+    qq_url=$(grep -Eo "(https?:)?//[^\"'[:space:]]+" "$normalized_config" |
+      grep -Ei '(arm64|aarch64)[^[:space:]]*\.deb([?#][^[:space:]]*)?' |
+      head -n 1)
+    if [ -z "$qq_url" ]; then
+      echo "官方发布配置中未找到 ARM64 LinuxQQ deb 下载地址"
+      echo "可临时通过 ASTRBOT_LINUXQQ_URL 指定可信的 ARM64 deb 地址后重试"
+      return 1
+    fi
+    case "$qq_url" in //*) qq_url="https:$qq_url" ;; esac
+  fi
+
+  if validate_linuxqq_deb "$qq_deb"; then
+    echo "复用上次已下载并校验通过的 LinuxQQ 安装包"
+  else
+    if [ -f "$qq_deb" ]; then echo "发现不完整的 LinuxQQ 缓存，已清理并重新下载"; fi
+    rm -f "$qq_deb" "$qq_deb_part"
+echo "正在下载 LinuxQQ ARM64 安装包..."
+download_url="$qq_url"
+if ! curl -fL --connect-timeout 20 --max-time 600 \
+        -A 'Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 Chrome/124 Safari/537.36' \
+        -e 'https://im.qq.com/' "$download_url" -o "$qq_deb_part"; then
+      rm -f "$qq_deb_part"
+  echo "LinuxQQ 官网直链下载失败，尝试申请兼容签名..."
+  if get_linuxqq_signed_url "$qq_url" && [ "$LINUXQQ_SIGNED_URL" != "$qq_url" ] &&
+      curl -fL --connect-timeout 20 --max-time 600 \
+        -A 'Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 Chrome/124 Safari/537.36' \
+        -e 'https://im.qq.com/' "$LINUXQQ_SIGNED_URL" -o "$qq_deb_part"; then
+    :
+  else
+    rm -f "$qq_deb_part"
+    if ! use_local_linuxqq_deb "$qq_deb_part"; then
+      echo "LinuxQQ 官网下载安装包失败"
+      return 1
+    fi
+  fi
+fi
+    if ! validate_linuxqq_deb "$qq_deb_part"; then
+      echo "LinuxQQ 下载文件不完整或校验失败"
+      rm -f "$qq_deb_part"
+      return 1
+    fi
+    if ! mv -f "$qq_deb_part" "$qq_deb"; then
+      echo "保存 LinuxQQ 安装包失败"
+      rm -f "$qq_deb_part"
+      return 1
+    fi
+  fi
+  if ! validate_linuxqq_deb "$qq_deb"; then
+    echo "LinuxQQ 安装包完整性校验失败"
+    rm -f "$qq_deb"
+    return 1
+  fi
+
+  package_arch=$(dpkg-deb -f "$qq_deb" Architecture 2>/dev/null)
+  package_name=$(dpkg-deb -f "$qq_deb" Package 2>/dev/null)
+  case "$package_arch" in arm64|aarch64) ;; *)
+    echo "LinuxQQ 安装包架构不匹配: ${package_arch:-未知} (需要 arm64)"
+    rm -f "$qq_deb"
+    return 1
+  esac
+  if [ "$package_name" != "linuxqq" ]; then
+    echo "LinuxQQ 安装包名称异常: ${package_name:-未知}"
+    rm -f "$qq_deb"
+    return 1
+  fi
+
+  if apt-cache show libasound2t64 >/dev/null 2>&1; then
+    sound_package=libasound2t64
+  else
+    sound_package=libasound2
+  fi
+  if ! apt-get install -y libnss3 libgbm1 "$sound_package"; then
+    echo "LinuxQQ 运行依赖安装失败"
+    return 1
+  fi
+  if ! apt-get install -y "$qq_deb"; then
+    echo "LinuxQQ deb 安装失败"
+    return 1
+  fi
+  if ! linuxqq_ready; then
+    echo "LinuxQQ 安装后的命令/包状态验收失败"
+    return 1
+  fi
+
+  rm -f "$config_file" "$normalized_config" "$qq_deb"
+  progress_echo "LinuxQQ 安装完成"
+}
+
+patch_napcat_installer(){
+  local installer="$1"
+  # 上游历史脚本会让 curl 在 HTTP 404 时继续，并固定使用 Ubuntu 24.04 已淘汰的 libasound2。
+  sed -i -E 's/curl[[:space:]]+-k[[:space:]]+-L/curl -fL/g; s/curl[[:space:]]+-kL/curl -fL/g' "$installer"
+  if apt-cache show libasound2t64 >/dev/null 2>&1; then
+    sed -i -E 's/(^|[^[:alnum:]_])libasound2([^[:alnum:]_]|$)/\1libasound2t64\2/g' "$installer"
+  fi
+  # 本脚本已用官网签名地址安装并验收 LinuxQQ；上游主流程仍会无条件调用旧版 install_linuxqq。
+  # 只替换主流程中的独立调用行，保留函数定义，避免再次下载已失效的固定版本。
+  sed -i -E 's/^[[:space:]]*install_linuxqq[[:space:]]*$/log "LinuxQQ 已由 AstrBot Android 安装，跳过上游重复安装"/' "$installer"
+  if grep -qE '^[[:space:]]*install_linuxqq[[:space:]]*$' "$installer"; then
+    echo "修补 NapCat 上游 LinuxQQ 重复安装步骤失败"
+    return 1
+  fi
+}
+
 install_napcat(){
   # 检查是否完整安装。旧版本可能留下 launcher.sh，但 LinuxQQ 或依赖包安装失败。
   if ! check_napcat_ready >/dev/null 2>&1; then
     progress_echo "Napcat $L_NOT_INSTALLED，$L_INSTALLING..."
 
-    mkdir -p /etc/apt/apt.conf.d
-    printf 'Acquire::ForceIPv4 "true";\n' > /etc/apt/apt.conf.d/99astrbot-force-ipv4
+    if ! prepare_apt_downloads; then
+      echo "Ubuntu 软件源刷新失败，请检查上方 apt 输出"
+      exit 1
+    fi
     
     if ! apt --fix-broken install -y; then
       echo "apt 修复依赖失败，继续执行安装并在结束时做完整校验"
+    fi
+
+    # 先修复最容易失效的 LinuxQQ 下载。失败时保留现有 NapCat 文件与配置，便于直接重试。
+    if ! install_linuxqq; then
+      echo "LinuxQQ 安装失败，NapCat 安装已中止"
+      exit 1
     fi
 
     # 备份配置目录（如果存在）
@@ -255,6 +471,7 @@ install_napcat(){
       echo "设置 napcat.sh 执行权限失败"
       exit 1
     fi
+    if ! patch_napcat_installer napcat.sh; then echo "修补 napcat.sh 失败"; exit 1; fi
     if ! bash napcat.sh; then
       echo "NapCat 上游安装脚本执行失败"
       exit 1

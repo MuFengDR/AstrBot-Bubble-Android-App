@@ -793,7 +793,9 @@ class HomeController extends GetxController {
       ..write('export L_INSTALLED=${S.current.installed}; ')
       ..write('export ASTRBOT_DASHBOARD_PORT=${ServicePorts.dashboardPort}; ')
       ..write('export ASTRBOT_ONEBOT_WS_PORT=${ServicePorts.oneBotWsPort}; ')
-      ..write('export ASTRBOT_GITHUB_PROXY=${EnvironmentConfig.githubProxy}; ')
+      ..write(
+        'export ASTRBOT_GITHUB_PROXY=${EnvironmentConfig.effectiveGithubProxy}; ',
+      )
       ..write('export ASTRBOT_FORCE_REINSTALL_STEP=${reinstall ? step : ''}; ')
       ..write('chmod +x /root/astrbot-startup.sh; ')
       ..write('bash /root/astrbot-startup.sh --step $step && ')
@@ -1826,12 +1828,13 @@ class HomeController extends GetxController {
         _napCatOneBotAccountConfigFile(id)!,
     ];
     for (final file in files) {
-      final config = await _readJsonMap(file) ?? _buildDefaultNapCatOneBotConfig(port);
+      final config =
+          await _readJsonMap(file) ?? _buildDefaultNapCatOneBotConfig(port);
       final clients = _webSocketClientList(config);
       if (clients.isEmpty) {
         clients.add(
-          _buildDefaultNapCatOneBotConfig(port)['network']
-              ['websocketClients'][0],
+          _buildDefaultNapCatOneBotConfig(port)['network']['websocketClients']
+              [0],
         );
       } else {
         final first = clients.first;

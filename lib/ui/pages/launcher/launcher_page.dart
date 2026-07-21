@@ -33,6 +33,14 @@ class _LauncherPageState extends State<LauncherPage>
   Worker? _napCatInstancesWorker;
   bool _checkingEnvironment = false;
 
+  Future<void> _showGithubProxyDialog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => const _GithubProxyDialog(),
+    );
+    if (mounted) setState(() {});
+  }
+
   @override
   void initState() {
     super.initState();
@@ -800,8 +808,7 @@ class _LauncherPageState extends State<LauncherPage>
   }
 
   void _invalidateBotBindingState(String id) {
-    _botBindingRefreshVersions[id] =
-        (_botBindingRefreshVersions[id] ?? 0) + 1;
+    _botBindingRefreshVersions[id] = (_botBindingRefreshVersions[id] ?? 0) + 1;
     _botBindingStateLoading.remove(id);
     _botBindingStates.remove(id);
   }
@@ -1340,8 +1347,9 @@ class _LauncherPageState extends State<LauncherPage>
     );
     if (result == null) return;
 
-    final webUiPort =
-        result.webUiPortText.isEmpty ? null : int.tryParse(result.webUiPortText);
+    final webUiPort = result.webUiPortText.isEmpty
+        ? null
+        : int.tryParse(result.webUiPortText);
     if (result.webUiPortText.isNotEmpty && webUiPort == null) {
       _showSnack('端口只能填写数字，留空表示自动分配');
       return;
@@ -1377,8 +1385,7 @@ class _LauncherPageState extends State<LauncherPage>
     final port = int.tryParse(portText);
     final nextOneBotPort =
         oneBotPortText.isEmpty ? null : int.tryParse(oneBotPortText);
-    final nextDisplay =
-        displayText.isEmpty ? null : int.tryParse(displayText);
+    final nextDisplay = displayText.isEmpty ? null : int.tryParse(displayText);
     final name = result.nameText;
 
     if (portText.isNotEmpty && port == null) {
@@ -1569,25 +1576,15 @@ class _LauncherPageState extends State<LauncherPage>
         children: [
           Padding(
             padding: const EdgeInsets.only(top: 12),
-            child: DropdownButtonFormField<String>(
-              initialValue: EnvironmentConfig.githubProxy,
-              decoration: const InputDecoration(
-                labelText: 'GitHub 代理',
-                border: OutlineInputBorder(),
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.speed),
+              title: const Text('GitHub 代理'),
+              subtitle: Text(
+                '${EnvironmentConfig.labelForProxy(EnvironmentConfig.githubProxy)} · 点击测速并选择镜像',
               ),
-              items: EnvironmentConfig.githubProxyOptions
-                  .map(
-                    (option) => DropdownMenuItem<String>(
-                      value: option['value'],
-                      child: Text(option['name'] ?? option['value']!),
-                    ),
-                  )
-                  .toList(),
-              onChanged: (value) {
-                if (value == null) return;
-                EnvironmentConfig.setGithubProxy(value);
-                setState(() {});
-              },
+              trailing: const Icon(Icons.chevron_right),
+              onTap: _showGithubProxyDialog,
             ),
           ),
           const SizedBox(height: 8),
@@ -1697,8 +1694,7 @@ class _NapCatAccountDialogState extends State<_NapCatAccountDialog> {
   void initState() {
     super.initState();
     _nameController = TextEditingController(text: widget.initialName);
-    _webUiPortController =
-        TextEditingController(text: widget.initialWebUiPort);
+    _webUiPortController = TextEditingController(text: widget.initialWebUiPort);
     _oneBotPortController =
         TextEditingController(text: widget.initialOneBotPort);
     _displayController = TextEditingController(text: widget.initialDisplay);
@@ -1836,6 +1832,216 @@ extension _NapCatAccountOperationLabel on _NapCatAccountOperation {
       case _NapCatAccountOperation.loggingOut:
         return '正在退出登录';
     }
+  }
+}
+
+class _GithubProxyDialog extends StatefulWidget {
+  const _GithubProxyDialog();
+
+  @override
+  State<_GithubProxyDialog> createState() => _GithubProxyDialogState();
+}
+
+class _GithubProxyDialogState extends State<_GithubProxyDialog> {
+  static const String _testTarget =
+      'https://raw.githubusercontent.com/astral-sh/uv/main/README.md';
+  final Map<String, int> _latencies = {};
+  final Set<String> _testing = {};
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _testAll());
+  }
+
+  void _testAll() {
+    final targets = EnvironmentConfig.githubProxyOptions.where(
+      (option) => option['value'] != EnvironmentConfig.autoProxy,
+    );
+    setState(() {
+      _latencies.clear();
+      _testing
+        ..clear()
+        ..addAll(targets.map((option) => option['value']!));
+    });
+    for (final option in targets) {
+      _testProxy(option['value']!);
+    }
+  }
+
+  Future<void> _testProxy(String proxy) async {
+    final stopwatch = Stopwatch()..start();
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 10);
+    var result = -1;
+    try {
+      final url = proxy == EnvironmentConfig.directProxy
+          ? _testTarget
+          : '$proxy/$_testTarget';
+      final request = await client.getUrl(Uri.parse(url));
+      final response =
+          await request.close().timeout(const Duration(seconds: 10));
+      await response.drain<void>();
+      if (response.statusCode >= 200 && response.statusCode < 400) {
+        result = stopwatch.elapsedMilliseconds;
+      }
+    } catch (_) {
+      result = -1;
+    } finally {
+      stopwatch.stop();
+      client.close(force: true);
+      _latencies[proxy] = result;
+      _testing.remove(proxy);
+      _updateAutoResolved();
+      if (mounted) setState(() {});
+    }
+  }
+
+  void _updateAutoResolved() {
+    String? fastest;
+    var fastestMs = 1 << 30;
+    for (final entry in _latencies.entries) {
+      if (entry.value >= 0 && entry.value < fastestMs) {
+        fastest = entry.key;
+        fastestMs = entry.value;
+      }
+    }
+    if (fastest != null) {
+      EnvironmentConfig.setGithubProxyAutoResolved(fastest);
+    }
+  }
+
+  List<Map<String, String>> get _sortedOptions {
+    final all = EnvironmentConfig.githubProxyOptions;
+    final direct = all.firstWhere(
+      (option) => option['value'] == EnvironmentConfig.directProxy,
+    );
+    final auto = all.firstWhere(
+      (option) => option['value'] == EnvironmentConfig.autoProxy,
+    );
+    final proxies = all
+        .where(
+          (option) =>
+              option['value'] != EnvironmentConfig.directProxy &&
+              option['value'] != EnvironmentConfig.autoProxy,
+        )
+        .toList();
+    proxies.sort((a, b) {
+      final av = _latencies[a['value']!];
+      final bv = _latencies[b['value']!];
+      final ar = av == null ? 1 : (av < 0 ? 2 : 0);
+      final br = bv == null ? 1 : (bv < 0 ? 2 : 0);
+      if (ar != br) return ar.compareTo(br);
+      if (ar == 0 && av != bv) return av!.compareTo(bv!);
+      return a['name']!.compareTo(b['name']!);
+    });
+    return [direct, auto, ...proxies];
+  }
+
+  Color _latencyColor(int latency) {
+    if (latency < 0) return Colors.red;
+    if (latency < 800) return Colors.green;
+    if (latency < 2000) return Colors.orange;
+    return Colors.grey;
+  }
+
+  Widget _statusWidget(String value) {
+    if (value == EnvironmentConfig.autoProxy) {
+      final resolved = EnvironmentConfig.githubProxyAutoResolved;
+      return Text(
+        EnvironmentConfig.labelForProxy(resolved),
+        style: const TextStyle(fontSize: 12, color: Colors.grey),
+      );
+    }
+    if (_testing.contains(value)) {
+      return const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox.square(
+            dimension: 14,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          SizedBox(width: 6),
+          Text('测速中', style: TextStyle(fontSize: 12, color: Colors.grey)),
+        ],
+      );
+    }
+    final latency = _latencies[value];
+    if (latency == null) {
+      return const Text(
+        '未测速',
+        style: TextStyle(fontSize: 12, color: Colors.grey),
+      );
+    }
+    return Text(
+      latency < 0 ? '失败' : '$latency ms',
+      style: TextStyle(
+        fontSize: 12,
+        color: _latencyColor(latency),
+        fontWeight: FontWeight.bold,
+      ),
+    );
+  }
+
+  void _select(String value) {
+    if (value == EnvironmentConfig.autoProxy) _updateAutoResolved();
+    EnvironmentConfig.setGithubProxy(value);
+    Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final maxHeight = math.min(400.0, MediaQuery.sizeOf(context).height * 0.55);
+    return AlertDialog(
+      title: const Text('GitHub 代理测速'),
+      content: SizedBox(
+        width: double.maxFinite,
+        height: maxHeight,
+        child: Column(
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    '点选一个镜像作为下载代理',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: _testing.isEmpty ? _testAll : null,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('重新测速'),
+                ),
+              ],
+            ),
+            const Divider(),
+            Expanded(
+              child: ListView(
+                children: _sortedOptions.map((option) {
+                  final value = option['value']!;
+                  return ListTile(
+                    leading: Radio<String>(
+                      value: value,
+                      groupValue: EnvironmentConfig.githubProxy,
+                      onChanged: (_) => _select(value),
+                    ),
+                    title: Text(option['name']!),
+                    trailing: _statusWidget(value),
+                    onTap: () => _select(value),
+                  );
+                }).toList(),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('关闭'),
+        ),
+      ],
+    );
   }
 }
 
