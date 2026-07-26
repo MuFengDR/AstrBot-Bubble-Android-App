@@ -128,9 +128,6 @@
   ],
   "dashboard": {
     "enable": true,
-    "username": "astrbot",
-    "password": "77b90590a8945a7d36c963981a307dc9",
-    "jwt_secret": "60cee8cf12978fcd66f66136a9bd0df4407e90c16bfd6590f8018b8c0bccf8a2",
     "host": "0.0.0.0",
     "port": 6185
   },

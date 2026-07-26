@@ -37,6 +37,7 @@ class TerminalView extends StatefulWidget {
     this.onTapUp,
     this.onSecondaryTapDown,
     this.onSecondaryTapUp,
+    this.onSelectionCompleted,
     this.mouseCursor = SystemMouseCursors.text,
     this.keyboardType = TextInputType.emailAddress,
     this.keyboardAppearance = Brightness.dark,
@@ -93,6 +94,11 @@ class TerminalView extends StatefulWidget {
 
   /// Function called when the user stops holding down a secondary button.
   final void Function(TapUpDetails, CellOffset)? onSecondaryTapUp;
+
+  /// Called when a touch selection gesture finishes. The supplied position is
+  /// the global position of the user's finger and can be used to anchor a
+  /// selection toolbar or context menu.
+  final ValueChanged<Offset>? onSelectionCompleted;
 
   /// The mouse cursor for mouse pointers that are hovering over the terminal.
   /// [SystemMouseCursors.text] by default.
@@ -162,7 +168,8 @@ class TerminalViewState extends State<TerminalView> {
 
   late ScrollController _scrollController;
 
-  RenderTerminal get renderTerminal => _viewportKey.currentContext!.findRenderObject() as RenderTerminal;
+  RenderTerminal get renderTerminal =>
+      _viewportKey.currentContext!.findRenderObject() as RenderTerminal;
 
   @override
   void initState() {
@@ -264,7 +271,8 @@ class TerminalViewState extends State<TerminalView> {
         onAction: (action) {
           _scrollToBottom();
           // Android sends TextInputAction.newline when the user presses the virtual keyboard's enter key.
-          if (action == TextInputAction.done || action == TextInputAction.newline) {
+          if (action == TextInputAction.done ||
+              action == TextInputAction.newline) {
             widget.terminal.keyInput(TerminalKey.enter);
           }
         },
@@ -300,8 +308,11 @@ class TerminalViewState extends State<TerminalView> {
       terminalController: _controller,
       onTapUp: _onTapUp,
       onTapDown: _onTapDown,
-      onSecondaryTapDown: widget.onSecondaryTapDown != null ? _onSecondaryTapDown : null,
-      onSecondaryTapUp: widget.onSecondaryTapUp != null ? _onSecondaryTapUp : null,
+      onSecondaryTapDown:
+          widget.onSecondaryTapDown != null ? _onSecondaryTapDown : null,
+      onSecondaryTapUp:
+          widget.onSecondaryTapUp != null ? _onSecondaryTapUp : null,
+      onSelectionCompleted: widget.onSelectionCompleted,
       readOnly: widget.readOnly,
       child: child,
     );
@@ -333,7 +344,8 @@ class TerminalViewState extends State<TerminalView> {
   }
 
   Rect get globalCursorRect {
-    return renderTerminal.localToGlobal(renderTerminal.cursorOffset) & renderTerminal.cellSize;
+    return renderTerminal.localToGlobal(renderTerminal.cursorOffset) &
+        renderTerminal.cellSize;
   }
 
   void _onTapUp(TapUpDetails details) {

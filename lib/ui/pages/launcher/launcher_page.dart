@@ -32,6 +32,7 @@ class _LauncherPageState extends State<LauncherPage>
   final Set<String> _runningNapCatIds = {};
   Worker? _napCatInstancesWorker;
   bool _checkingEnvironment = false;
+  bool _initialEnvironmentCheckComplete = false;
 
   Future<void> _showGithubProxyDialog() async {
     await showDialog<void>(
@@ -53,6 +54,7 @@ class _LauncherPageState extends State<LauncherPage>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _refreshEnvironmentStatus();
       _refreshAllBotBindingStates();
+      homeController.refreshInitialPasswordAssistanceState();
     });
   }
 
@@ -87,6 +89,67 @@ class _LauncherPageState extends State<LauncherPage>
       _showSnack('AstrBot 已停止');
     } catch (e) {
       _showSnack('停止失败：$e');
+    }
+  }
+
+  Future<void> _copyAstrBotInitialPassword() async {
+    final copied = await homeController.copyAstrBotInitialPassword();
+    _showSnack(copied ? '密码已复制' : '未检测到密码');
+  }
+
+  Future<void> _resetAstrBotDashboardPassword() async {
+    if (!homeController.isAstrBotInstalled) {
+      _showSnack('AstrBot 环境未安装完整');
+      return;
+    }
+
+    final running = homeController.isAstrBotRunning.value ||
+        homeController.isAstrBotStarting.value;
+    if (running) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('重置面板密码'),
+          content: const Text(
+            '重置密码前需要停止 AstrBot。确认后将停止服务，并打开官方密码修改终端。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('停止并继续'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+      await homeController.stopAstrBot();
+    }
+
+    try {
+      await homeController.openAstrBotPasswordResetTerminal();
+      widget.onNavigate?.call(2);
+      _showSnack('请在终端中输入两次新密码');
+    } catch (e) {
+      _showSnack('打开密码重置终端失败：$e');
+    }
+  }
+
+  Future<void> _handleAstrBotMenu(String action) async {
+    switch (action) {
+      case 'copy_initial_password':
+        await _copyAstrBotInitialPassword();
+      case 'reset_dashboard_password':
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+        if (!mounted) return;
+        await _resetAstrBotDashboardPassword();
+      case 'change_dashboard_port':
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+        if (!mounted) return;
+        await _showAstrBotPortDialog();
     }
   }
 
@@ -174,13 +237,14 @@ class _LauncherPageState extends State<LauncherPage>
       ),
     );
 
-    if (result != true) {
-      controller.dispose();
-      return;
-    }
-
-    final port = int.tryParse(controller.text.trim());
+    final portText = controller.text.trim();
+    // Navigator.pop 的 Future 会早于对话框退场动画完成。延迟释放，避免
+    // TextField 仍在卸载依赖时提前销毁 controller。
+    await Future<void>.delayed(kThemeAnimationDuration);
     controller.dispose();
+    if (!mounted || result != true) return;
+
+    final port = int.tryParse(portText);
     if (port == null || !ServicePorts.isValidPort(port)) {
       _showSnack('端口无效：请输入 1024-65535');
       return;
@@ -231,6 +295,7 @@ class _LauncherPageState extends State<LauncherPage>
       final napCatReady = baseCommandReady && await _hasNapCat();
       final astrBotReady = uvReady && await _hasAstrBot();
 
+      if (!mounted) return;
       setState(() {
         _environmentStates['base'] = _EnvStepState(
           installed: baseCommandReady,
@@ -248,9 +313,13 @@ class _LauncherPageState extends State<LauncherPage>
           installed: astrBotReady,
           enabled: uvReady,
         );
+        _initialEnvironmentCheckComplete = true;
       });
     } finally {
       _checkingEnvironment = false;
+      if (mounted && !_initialEnvironmentCheckComplete) {
+        setState(() => _initialEnvironmentCheckComplete = true);
+      }
     }
   }
 
@@ -364,7 +433,7 @@ class _LauncherPageState extends State<LauncherPage>
         child: Column(
           children: [
             GlassAppBar(
-              title: 'AstrBot',
+              title: '主页',
               opacity: homeController.topNavGlassOpacity.value,
               blur: homeController.glassBlurAmount.value * 30,
               actions: [
@@ -376,19 +445,21 @@ class _LauncherPageState extends State<LauncherPage>
               ],
             ),
             Expanded(
-              child: ListView(
-                physics: const BouncingScrollPhysics(
-                  parent: AlwaysScrollableScrollPhysics(),
-                ),
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 104),
-                children: [
-                  _buildQuickStartCard(context),
-                  const SizedBox(height: 12),
-                  _buildNapCatAccountsCard(context),
-                  const SizedBox(height: 12),
-                  _buildEnvironmentCard(context),
-                ],
-              ),
+              child: _initialEnvironmentCheckComplete
+                  ? ListView(
+                      physics: const BouncingScrollPhysics(
+                        parent: AlwaysScrollableScrollPhysics(),
+                      ),
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 104),
+                      children: [
+                        _buildQuickStartCard(context),
+                        const SizedBox(height: 12),
+                        _buildNapCatAccountsCard(context),
+                        const SizedBox(height: 12),
+                        _buildEnvironmentCard(context),
+                      ],
+                    )
+                  : const _EnvironmentLoadingView(),
             ),
           ],
         ),
@@ -397,7 +468,8 @@ class _LauncherPageState extends State<LauncherPage>
   }
 
   Widget _buildQuickStartCard(BuildContext context) {
-    return GlassPanel(
+    final installed = _environmentStates['astrbot']?.installed == true;
+    final card = GlassPanel(
       padding: const EdgeInsets.all(16),
       opacity: homeController.cardGlassOpacity.value,
       blur: homeController.glassBlurAmount.value * 30,
@@ -409,20 +481,53 @@ class _LauncherPageState extends State<LauncherPage>
               const AstrBotSparkleIcon(),
               const SizedBox(width: 8),
               Text('AstrBot', style: Theme.of(context).textTheme.titleMedium),
+              const Spacer(),
+              PopupMenuButton<String>(
+                tooltip: 'AstrBot 更多',
+                onSelected: _handleAstrBotMenu,
+                itemBuilder: (context) {
+                  final completed =
+                      homeController.initialPasswordAssistanceCompleted.value;
+                  return [
+                    PopupMenuItem<String>(
+                      value: 'copy_initial_password',
+                      enabled: !completed,
+                      child: Row(
+                        children: [
+                          const Icon(Icons.copy, size: 20),
+                          const SizedBox(width: 10),
+                          Flexible(
+                            child: Text(
+                              completed ? '复制初始密码（已完成首次登录）' : '复制初始密码',
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const PopupMenuItem<String>(
+                      value: 'reset_dashboard_password',
+                      child: Row(
+                        children: [
+                          Icon(Icons.lock_reset, size: 20),
+                          SizedBox(width: 10),
+                          Text('重置面板密码'),
+                        ],
+                      ),
+                    ),
+                    const PopupMenuItem<String>(
+                      value: 'change_dashboard_port',
+                      child: Row(
+                        children: [
+                          Icon(Icons.settings_ethernet, size: 20),
+                          SizedBox(width: 10),
+                          Text('修改监听端口'),
+                        ],
+                      ),
+                    ),
+                  ];
+                },
+              ),
             ],
-          ),
-          const SizedBox(height: 12),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            dense: true,
-            leading: const Icon(Icons.settings_ethernet),
-            title: const Text('监听端口'),
-            subtitle: Text('127.0.0.1:${ServicePorts.dashboardPort}'),
-            trailing: IconButton(
-              tooltip: '修改 AstrBot 端口',
-              onPressed: _showAstrBotPortDialog,
-              icon: const Icon(Icons.edit),
-            ),
           ),
           const SizedBox(height: 12),
           Row(
@@ -477,10 +582,16 @@ class _LauncherPageState extends State<LauncherPage>
         ],
       ),
     );
+    return _buildInstallGatedCard(
+      installed: installed,
+      message: '请先在环境管理中安装 AstrBot',
+      child: card,
+    );
   }
 
   Widget _buildNapCatAccountsCard(BuildContext context) {
-    return GlassPanel(
+    final installed = _environmentStates['napcat']?.installed == true;
+    final card = GlassPanel(
       padding: const EdgeInsets.all(16),
       opacity: homeController.cardGlassOpacity.value,
       blur: homeController.glassBlurAmount.value * 30,
@@ -532,6 +643,60 @@ class _LauncherPageState extends State<LauncherPage>
           }),
         ],
       ),
+    );
+    return _buildInstallGatedCard(
+      installed: installed,
+      message: '请先在环境管理中安装 NapCat',
+      child: card,
+    );
+  }
+
+  Widget _buildInstallGatedCard({
+    required bool installed,
+    required String message,
+    required Widget child,
+  }) {
+    if (installed) return child;
+    final colorScheme = Theme.of(context).colorScheme;
+    return Stack(
+      children: [
+        IgnorePointer(
+          child: Opacity(opacity: 0.42, child: child),
+        ),
+        Positioned.fill(
+          child: Center(
+            child: Container(
+              margin: const EdgeInsets.all(20),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: colorScheme.surfaceContainerHighest.withValues(
+                  alpha: 0.94,
+                ),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: colorScheme.outlineVariant.withValues(alpha: 0.7),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.download_for_offline_outlined,
+                    color: colorScheme.primary,
+                  ),
+                  const SizedBox(width: 10),
+                  Flexible(
+                    child: Text(
+                      message,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -1636,6 +1801,38 @@ class _LauncherPageState extends State<LauncherPage>
         onPressed: state.enabled ? () => _runStep(step, state) : null,
         icon: const Icon(Icons.download),
         label: Text(buttonText),
+      ),
+    );
+  }
+}
+
+class _EnvironmentLoadingView extends StatelessWidget {
+  const _EnvironmentLoadingView();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 32,
+            height: 32,
+            child: CircularProgressIndicator(strokeWidth: 3),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            '正在检查运行环境…',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '确认 AstrBot 与 NapCat 安装状态',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+          ),
+        ],
       ),
     );
   }

@@ -50,6 +50,8 @@ class _WebViewPageState extends State<WebViewPage> {
   final Map<String, int> _webUiZoomLevels = {};
   Worker? _customWebViewsWorker;
   Worker? _napCatTokenWorker;
+  bool _astrBotInitialPasswordFallbackUsed = false;
+  String? _lastAstrBotInitialPassword;
 
   final HomeController homeController = Get.find<HomeController>();
 
@@ -189,7 +191,11 @@ class _WebViewPageState extends State<WebViewPage> {
             _injectClipboardScript(_astrBotController);
             _disableZoom(_astrBotController);
             _applyWebUiZoom('astrbot', _astrBotController);
-            _injectPasswordScript(_astrBotController, url);
+            _injectPasswordScript(
+              _astrBotController,
+              url,
+              enableAstrBotInitialAssistance: true,
+            );
           },
           onWebResourceError: (WebResourceError error) {
             debugPrint('AstrBot WebView error: ${error.description}');
@@ -219,6 +225,10 @@ class _WebViewPageState extends State<WebViewPage> {
           _getClipboardData(_astrBotController);
         } else if (message.message.startsWith('savePassword:')) {
           _handlePasswordSave(message.message);
+        } else if (message.message == 'astrbotLoginSucceeded') {
+          _handleAstrBotLoginSucceeded();
+        } else if (message.message == 'astrbotInitialCredentialMissing') {
+          _copyInitialPasswordFallback();
         }
       },
     );
@@ -569,41 +579,103 @@ class _WebViewPageState extends State<WebViewPage> {
   }
 
   // 注入密码捕获和自动填充脚本
-  void _injectPasswordScript(WebViewController controller, String url) {
-    // 先尝试加载已保存的密码
-    final savedPassword = PasswordManager.getPassword(url);
+  void _injectPasswordScript(
+    WebViewController controller,
+    String url, {
+    bool enableAstrBotInitialAssistance = false,
+  }) {
+    final assistanceAvailable = enableAstrBotInitialAssistance &&
+        homeController.isAstrBotInstalled &&
+        homeController.isAstrBotActive;
+    final assistanceCompleted = !assistanceAvailable ||
+        homeController.initialPasswordAssistanceCompleted.value;
+    final initialPassword =
+        assistanceCompleted ? null : homeController.initialAstrBotPassword;
+    final initialUsername =
+        assistanceCompleted ? null : homeController.initialAstrBotUsername;
+    if (_lastAstrBotInitialPassword != initialPassword) {
+      _lastAstrBotInitialPassword = initialPassword;
+      _astrBotInitialPasswordFallbackUsed = false;
+    }
+
+    // 初始密码辅助期间不使用历史保存值，避免 AstrBot 重启后填入已失效密码。
+    final savedPassword =
+        assistanceCompleted ? PasswordManager.getPassword(url) : null;
+    final credential = initialPassword != null
+        ? <String, String>{
+            'username': initialUsername ?? 'astrbot',
+            'password': initialPassword,
+          }
+        : savedPassword;
+    final credentialJson = jsonEncode(credential);
+    final initialMode = initialPassword != null;
 
     final String jsCode = '''
       (function() {
-        if (window.__astrbotPasswordPatched) return;
-        window.__astrbotPasswordPatched = true;
-        // 自动填充已保存的密码
-        ${savedPassword != null ? '''
+        window.__astrbotCredential = $credentialJson;
+        window.__astrbotInitialCredentialMode = ${initialMode ? 'true' : 'false'};
+        window.__astrbotObserveLogin = ${assistanceAvailable ? 'true' : 'false'};
+        window.__astrbotInitialAssistanceActive = ${assistanceAvailable && !assistanceCompleted ? 'true' : 'false'};
+
+        // 新数据实例可能沿用同端口 WebView 的旧 localStorage。辅助状态尚未
+        // 完成时先清掉旧 token，只有本次登录新写入的 token 才算成功。
+        if (window.__astrbotInitialAssistanceActive &&
+            !window.__astrbotAssistanceTokenReset) {
+          localStorage.removeItem('token');
+          window.__astrbotAssistanceTokenReset = true;
+        }
+
+        function reportLoginSuccess() {
+          if (!window.__astrbotObserveLogin) return false;
+          if (localStorage.getItem('token')) {
+            try { Android.postMessage('astrbotLoginSucceeded'); } catch (_) {}
+            return true;
+          }
+          return false;
+        }
+
         function autoFillPassword() {
+          if (reportLoginSuccess()) return true;
+          const credential = window.__astrbotCredential;
+          if (!credential) return false;
           const usernameFields = document.querySelectorAll('input[type="text"], input[type="email"], input[name*="user"], input[name*="account"], input[id*="user"], input[id*="account"]');
           const passwordFields = document.querySelectorAll('input[type="password"]');
 
           if (usernameFields.length > 0 && passwordFields.length > 0) {
-            usernameFields[0].value = '${savedPassword['username']?.replaceAll("'", "\\'")}';
-            passwordFields[0].value = '${savedPassword['password']?.replaceAll("'", "\\'")}';
+            usernameFields[0].value = credential.username || 'astrbot';
+            passwordFields[0].value = credential.password || '';
 
-            // 触发input事件，确保框架能检测到值变化
             usernameFields[0].dispatchEvent(new Event('input', { bubbles: true }));
+            usernameFields[0].dispatchEvent(new Event('change', { bubbles: true }));
             passwordFields[0].dispatchEvent(new Event('input', { bubbles: true }));
+            passwordFields[0].dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
           }
+          return false;
         }
+        window.__astrbotAutoFillPassword = autoFillPassword;
 
-        // 页面加载完成后自动填充
-        if (document.readyState === 'loading') {
-          document.addEventListener('DOMContentLoaded', autoFillPassword);
-        } else {
-          autoFillPassword();
-        }
-
-        // 延迟填充,确保动态表单也能被填充
+        let filled = autoFillPassword();
         setTimeout(autoFillPassword, 500);
-        setTimeout(autoFillPassword, 1000);
-        ''' : ''}
+        setTimeout(function() { filled = autoFillPassword() || filled; }, 1000);
+        if (window.__astrbotInitialCredentialMode) {
+          setTimeout(function() {
+            if (!reportLoginSuccess() && !filled && !autoFillPassword()) {
+              try { Android.postMessage('astrbotInitialCredentialMissing'); } catch (_) {}
+            }
+          }, 1600);
+        }
+
+        if (reportLoginSuccess()) return;
+        if (window.__astrbotPasswordPatched) return;
+        window.__astrbotPasswordPatched = true;
+
+        window.__astrbotLoginPoll = setInterval(function() {
+          if (reportLoginSuccess()) {
+            clearInterval(window.__astrbotLoginPoll);
+            window.__astrbotLoginPoll = null;
+          }
+        }, 300);
 
         // 监听表单提交,捕获密码
         function capturePassword(event) {
@@ -667,6 +739,61 @@ class _WebViewPageState extends State<WebViewPage> {
     ''';
 
     controller.runJavaScript(jsCode);
+
+    if (assistanceAvailable &&
+        !assistanceCompleted &&
+        initialPassword == null) {
+      Future<void>.delayed(const Duration(milliseconds: 1800), () async {
+        if (!mounted ||
+            !homeController.isAstrBotActive ||
+            homeController.initialPasswordAssistanceCompleted.value ||
+            _astrBotInitialPasswordFallbackUsed) {
+          return;
+        }
+        final copied = await homeController.copyAstrBotInitialPassword();
+        if (!mounted ||
+            homeController.initialPasswordAssistanceCompleted.value) {
+          return;
+        }
+        _astrBotInitialPasswordFallbackUsed = true;
+        _showPasswordAssistMessage(copied ? '密码已复制，请粘贴' : '未检测到密码');
+      });
+    }
+  }
+
+  Future<void> _handleAstrBotLoginSucceeded() async {
+    if (homeController.initialPasswordAssistanceCompleted.value) return;
+    final initialPassword = homeController.initialAstrBotPassword;
+    if (initialPassword != null) {
+      await PasswordManager.deletePassword(
+        ServicePorts.dashboardUrl,
+        expectedPassword: initialPassword,
+      );
+    }
+    await homeController.markAstrBotInitialLoginSucceeded();
+  }
+
+  Future<void> _copyInitialPasswordFallback() async {
+    if (_astrBotInitialPasswordFallbackUsed ||
+        !homeController.isAstrBotActive ||
+        homeController.initialPasswordAssistanceCompleted.value) {
+      return;
+    }
+    final copied = await homeController.copyAstrBotInitialPassword();
+    if (!mounted || homeController.initialPasswordAssistanceCompleted.value) {
+      return;
+    }
+    _astrBotInitialPasswordFallbackUsed = true;
+    _showPasswordAssistMessage(copied ? '密码已复制，请粘贴' : '未检测到密码');
+  }
+
+  void _showPasswordAssistMessage(String message) {
+    Get.snackbar(
+      'AstrBot',
+      message,
+      snackPosition: SnackPosition.BOTTOM,
+      duration: const Duration(seconds: 2),
+    );
   }
 
   // 处理密码保存请求
@@ -681,6 +808,9 @@ class _WebViewPageState extends State<WebViewPage> {
       final password = data['password'] as String?;
 
       if (url != null && username != null && password != null) {
+        if (homeController.isCurrentInitialPassword(password)) {
+          return;
+        }
         PasswordManager.savePassword(
           url: url,
           username: username,

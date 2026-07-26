@@ -19,6 +19,7 @@ class TerminalGestureHandler extends StatefulWidget {
     this.onTapDown,
     this.onSecondaryTapDown,
     this.onSecondaryTapUp,
+    this.onSelectionCompleted,
     this.onTertiaryTapDown,
     this.onTertiaryTapUp,
     this.readOnly = false,
@@ -40,6 +41,8 @@ class TerminalGestureHandler extends StatefulWidget {
 
   final GestureTapUpCallback? onSecondaryTapUp;
 
+  final ValueChanged<Offset>? onSelectionCompleted;
+
   final GestureTapDownCallback? onTertiaryTapDown;
 
   final GestureTapUpCallback? onTertiaryTapUp;
@@ -59,6 +62,8 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
 
   LongPressStartDetails? _lastLongPressStartDetails;
 
+  Offset? _lastLongPressGlobalPosition;
+
   @override
   Widget build(BuildContext context) {
     return TerminalGestureDetector(
@@ -72,7 +77,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       onTertiaryTapUp: onSecondaryTapUp,
       onLongPressStart: onLongPressStart,
       onLongPressMoveUpdate: onLongPressMoveUpdate,
-      // onLongPressUp: onLongPressUp,
+      onLongPressUp: onLongPressUp,
       onDragStart: onDragStart,
       onDragUpdate: onDragUpdate,
       onDoubleTapDown: onDoubleTapDown,
@@ -162,17 +167,26 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
 
   void onLongPressStart(LongPressStartDetails details) {
     _lastLongPressStartDetails = details;
+    _lastLongPressGlobalPosition = details.globalPosition;
     renderTerminal.selectWord(details.localPosition);
   }
 
   void onLongPressMoveUpdate(LongPressMoveUpdateDetails details) {
+    _lastLongPressGlobalPosition = details.globalPosition;
     renderTerminal.selectWord(
       _lastLongPressStartDetails!.localPosition,
       details.localPosition,
     );
   }
 
-  // void onLongPressUp() {}
+  void onLongPressUp() {
+    final position = _lastLongPressGlobalPosition;
+    _lastLongPressStartDetails = null;
+    _lastLongPressGlobalPosition = null;
+    if (position != null && widget.terminalController.selection != null) {
+      widget.onSelectionCompleted?.call(position);
+    }
+  }
 
   void onDragStart(DragStartDetails details) {
     _lastDragStartDetails = details;

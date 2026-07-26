@@ -68,6 +68,37 @@ class PasswordManager {
     return null;
   }
 
+  /// 删除指定 URL 对应的密码。
+  ///
+  /// 传入 [expectedPassword] 时仅在已保存密码与其一致时删除，避免清理初始
+  /// 密码时误删用户后来保存的正式密码。
+  static Future<void> deletePassword(
+    String url, {
+    String? expectedPassword,
+  }) async {
+    if (box == null) return;
+
+    final domain = _extractDomain(url);
+    if (domain.isEmpty) return;
+
+    final stored = box!.get(_storageKey, defaultValue: <dynamic, dynamic>{});
+    if (stored is! Map || !stored.containsKey(domain)) return;
+
+    final domainData = stored[domain];
+    if (expectedPassword != null &&
+        (domainData is! Map ||
+            domainData['password']?.toString() != expectedPassword)) {
+      return;
+    }
+
+    final passwords = <String, dynamic>{};
+    stored.forEach((key, value) {
+      if (key.toString() != domain) passwords[key.toString()] = value;
+    });
+    await box!.put(_storageKey, passwords);
+    Log.i('已删除密码信息: $domain', tag: 'PasswordManager');
+  }
+
   /// 清除所有密码信息
   static Future<void> clearAllPasswords() async {
     if (box == null) return;

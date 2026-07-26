@@ -8,6 +8,7 @@ import 'package:global_repository/global_repository.dart';
 import 'package:settings/settings.dart';
 import 'package:xterm/xterm.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/config/app_config.dart';
 import '../../core/config/environment_config.dart';
@@ -88,6 +89,10 @@ enum BotBindingConfigState {
 }
 
 class HomeController extends GetxController {
+  static const String _successfulInitialLoginJwtKey =
+      'astrbot_successful_initial_login_jwt_secret';
+  static const String _legacyDefaultDashboardPasswordHash =
+      '77b90590a8945a7d36c963981a307dc9';
   // 终端标签页管理器
   late final TerminalTabManager terminalTabManager;
   // bool vsCodeStaring = false;
@@ -106,6 +111,7 @@ class HomeController extends GetxController {
   final RxBool isAstrBotStarting = false.obs;
   final RxBool isAstrBotRunning = false.obs;
   final RxBool isAstrBotStopping = false.obs;
+  final RxBool initialPasswordAssistanceCompleted = false.obs;
   final RxString homeBackgroundPath = ''.obs;
   final RxDouble cardGlassOpacity = 0.62.obs;
   final RxDouble glassBlurAmount = 0.45.obs;
@@ -131,6 +137,11 @@ class HomeController extends GetxController {
   bool _isAppInForeground = true; // 应用是否在前台
   bool showStartupProgress = true; // 是否显示启动进度浮层
   String _startupLogText = '';
+  String _initialCredentialScanBuffer = '';
+  String? _initialAstrBotUsername;
+  String? _initialAstrBotPassword;
+  String? _currentAstrBotJwtSecret;
+  int? _runningAstrBotDashboardPort;
   String _terminalWriteBuffer = '';
   Timer? _terminalWriteTimer;
 
@@ -155,6 +166,129 @@ class HomeController extends GetxController {
   }
 
   String get startupLogText => _startupLogText;
+
+  String? get initialAstrBotUsername => _initialAstrBotUsername;
+  String? get initialAstrBotPassword => _initialAstrBotPassword;
+  bool get isAstrBotActive => isAstrBotStarting.value || isAstrBotRunning.value;
+
+  bool isCurrentInitialPassword(String? password) =>
+      password != null &&
+      _initialAstrBotPassword != null &&
+      password == _initialAstrBotPassword;
+
+  void _clearInitialCredentials() {
+    _initialCredentialScanBuffer = '';
+    _initialAstrBotUsername = null;
+    _initialAstrBotPassword = null;
+  }
+
+  Future<Map<String, dynamic>?> _readAstrBotDashboardConfig() async {
+    for (final file in _astrBotConfigFiles) {
+      final config = await _readJsonMap(file);
+      final dashboard = config?['dashboard'];
+      if (dashboard is Map) {
+        return Map<String, dynamic>.from(dashboard);
+      }
+    }
+    return null;
+  }
+
+  Future<void> refreshInitialPasswordAssistanceState() async {
+    if (!isAstrBotInstalled) {
+      _currentAstrBotJwtSecret = null;
+      initialPasswordAssistanceCompleted.value = false;
+      _clearInitialCredentials();
+      return;
+    }
+
+    final dashboard = await _readAstrBotDashboardConfig();
+    if (dashboard == null) {
+      _currentAstrBotJwtSecret = null;
+      initialPasswordAssistanceCompleted.value = false;
+      return;
+    }
+
+    final jwtSecret = dashboard['jwt_secret']?.toString() ?? '';
+    _currentAstrBotJwtSecret = jwtSecret.isEmpty ? null : jwtSecret;
+    final passwordChangeRequired = dashboard['password_change_required'];
+    final username = dashboard['username']?.toString() ?? '';
+    final legacyPasswordHash =
+        dashboard['password']?.toString().toLowerCase() ?? '';
+    final pbkdf2Password = dashboard['pbkdf2_password']?.toString() ?? '';
+    final passwordStorageUpgraded =
+        dashboard['password_storage_upgraded'] == true;
+    final legacyAndroidDefaultCredentials = username == 'astrbot' &&
+        legacyPasswordHash == _legacyDefaultDashboardPasswordHash &&
+        pbkdf2Password.isEmpty &&
+        !passwordStorageUpgraded &&
+        passwordChangeRequired != true;
+    final hasPasswordHash =
+        (dashboard['pbkdf2_password']?.toString().isNotEmpty ?? false) ||
+            (dashboard['password']?.toString().isNotEmpty ?? false);
+    final passwordSetupCompleted = !legacyAndroidDefaultCredentials &&
+        (passwordChangeRequired == false ||
+            (passwordChangeRequired == null && hasPasswordHash));
+    final successfulJwt = box?.get(_successfulInitialLoginJwtKey)?.toString();
+    final loginObserved = jwtSecret.isNotEmpty && successfulJwt == jwtSecret;
+    initialPasswordAssistanceCompleted.value =
+        passwordSetupCompleted || loginObserved;
+    if (initialPasswordAssistanceCompleted.value) {
+      _clearInitialCredentials();
+    } else if (legacyAndroidDefaultCredentials) {
+      _initialAstrBotUsername = 'astrbot';
+      _initialAstrBotPassword = 'astrbot';
+    }
+  }
+
+  void _captureInitialCredentials(String output) {
+    if (initialPasswordAssistanceCompleted.value || output.isEmpty) return;
+
+    _initialCredentialScanBuffer += _cleanTerminalLog(output);
+    if (_initialCredentialScanBuffer.length > 4096) {
+      _initialCredentialScanBuffer = _initialCredentialScanBuffer.substring(
+        _initialCredentialScanBuffer.length - 4096,
+      );
+    }
+
+    final usernameMatch = RegExp(
+      r'Initial username:\s*([^\s]+)',
+      caseSensitive: false,
+    ).firstMatch(_initialCredentialScanBuffer);
+    final passwordMatch = RegExp(
+      r'Initial password:\s*([^\s]+)',
+      caseSensitive: false,
+    ).firstMatch(_initialCredentialScanBuffer);
+    _initialAstrBotUsername =
+        usernameMatch?.group(1) ?? _initialAstrBotUsername;
+    _initialAstrBotPassword =
+        passwordMatch?.group(1) ?? _initialAstrBotPassword;
+  }
+
+  Future<void> markAstrBotInitialLoginSucceeded() async {
+    await refreshInitialPasswordAssistanceState();
+    final jwtSecret = _currentAstrBotJwtSecret;
+    if (jwtSecret != null && jwtSecret.isNotEmpty) {
+      await box?.put(_successfulInitialLoginJwtKey, jwtSecret);
+    }
+    initialPasswordAssistanceCompleted.value = true;
+    _clearInitialCredentials();
+    Log.i('已检测到 AstrBot 首次登录成功，停止初始密码辅助', tag: 'AstrBot');
+  }
+
+  Future<bool> copyAstrBotInitialPassword() async {
+    if (!isAstrBotInstalled ||
+        !isAstrBotActive ||
+        initialPasswordAssistanceCompleted.value) {
+      return false;
+    }
+    if (_initialAstrBotPassword == null) {
+      _captureInitialCredentials(_startupLogText);
+    }
+    final password = _initialAstrBotPassword;
+    if (password == null || password.isEmpty) return false;
+    await Clipboard.setData(ClipboardData(text: password));
+    return true;
+  }
 
   void clearStartupLog() {
     _startupLogText = '';
@@ -295,6 +429,7 @@ class HomeController extends GetxController {
         .cast<List<int>>()
         .transform(const Utf8Decoder(allowMalformed: true))
         .listen((event) async {
+      _captureInitialCredentials(event);
       _recordStartupLog(event);
       // 输出到 Flutter 控制台
       // Output to Flutter console
@@ -651,6 +786,8 @@ class HomeController extends GetxController {
     _isQrcodeProcessed = false;
     webviewHasOpen = false;
     _startupLogText = '';
+    _clearInitialCredentials();
+    await refreshInitialPasswordAssistanceState();
     _webviewSubscription?.cancel();
     _qrcodeSubscription?.cancel();
     pseudoTerminal?.kill();
@@ -683,6 +820,7 @@ class HomeController extends GetxController {
       final appVersion = await getAppVersion();
 
       // 写入 common.sh 脚本
+      _runningAstrBotDashboardPort = ServicePorts.dashboardPort;
       File('${RuntimeEnvir.homePath}/common.sh').writeAsStringSync(
         _toUnixLineEndings(getCommonScript(appVersion)),
       );
@@ -695,6 +833,7 @@ class HomeController extends GetxController {
       isAstrBotStarting.value = false;
       isAstrBotRunning.value = false;
       showStartupProgress = false;
+      _runningAstrBotDashboardPort = null;
       update();
       rethrow;
     }
@@ -732,16 +871,24 @@ class HomeController extends GetxController {
       await _webviewSubscription?.cancel();
       _webviewSubscription = null;
 
-      pseudoTerminal?.kill();
-      pseudoTerminal = null;
+      final terminal = pseudoTerminal;
+      final rootPtyPid = terminal?.pid;
+      final dashboardPort =
+          _runningAstrBotDashboardPort ?? ServicePorts.dashboardPort;
+      await _terminateAstrBotProcessTree(rootPtyPid: rootPtyPid);
 
-      if (File('${RuntimeEnvir.homePath}/common.sh').existsSync()) {
-        await _runUbuntuShell(
-          'pkill -f "uv run --no-sync main.py" 2>/dev/null || true; '
-          'pkill -f "python.*main.py" 2>/dev/null || true; '
-          'pkill -f "/root/AstrBot/.venv.*main.py" 2>/dev/null || true',
+      if (!await _waitForPortAvailable(dashboardPort)) {
+        await _terminateAstrBotProcessTree(
+          rootPtyPid: rootPtyPid,
+          force: true,
         );
       }
+      terminal?.kill(ProcessSignal.sigkill);
+      pseudoTerminal = null;
+      if (!await _waitForPortAvailable(dashboardPort)) {
+        throw 'AstrBot 进程未完全退出，端口 $dashboardPort 仍被占用';
+      }
+      _runningAstrBotDashboardPort = null;
 
       _isLocalhostDetected = false;
       _isQrcodeProcessed = false;
@@ -755,6 +902,64 @@ class HomeController extends GetxController {
       isAstrBotStopping.value = false;
       update();
     }
+  }
+
+  bool get isAstrBotInstalled =>
+      File('$ubuntuPath/root/AstrBot/pyproject.toml').existsSync() &&
+      Directory('$ubuntuPath/root/AstrBot/.venv').existsSync() &&
+      File('$ubuntuPath/root/.local/bin/uv').existsSync();
+
+  Future<void> _terminateAstrBotProcessTree({
+    int? rootPtyPid,
+    bool force = false,
+  }) async {
+    if (!File('${RuntimeEnvir.homePath}/common.sh').existsSync()) return;
+    final signal = force ? 'KILL' : 'TERM';
+    final command = r'''
+signal="{{SIGNAL}}"
+children_of() {
+  ps -eo pid=,ppid= 2>/dev/null | awk -v parent="$1" '$2 == parent { print $1 }'
+}
+kill_tree() {
+  for child in $(children_of "$1"); do
+    kill_tree "$child"
+  done
+  kill -"$signal" "$1" 2>/dev/null || true
+}
+root_pid="{{ROOT_PID}}"
+if [ -n "$root_pid" ] && [ "$root_pid" -gt 1 ] 2>/dev/null; then
+  for child in $(children_of "$root_pid"); do
+    kill_tree "$child"
+  done
+fi
+'''
+        .replaceAll('{{SIGNAL}}', signal)
+        .replaceAll('{{ROOT_PID}}', rootPtyPid?.toString() ?? '');
+    await _runUbuntuShell(command);
+  }
+
+  Future<bool> _waitForPortAvailable(int port) async {
+    for (var attempt = 0; attempt < 12; attempt++) {
+      if (await _isPortAvailable(port)) return true;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+    return false;
+  }
+
+  Future<void> openAstrBotPasswordResetTerminal() async {
+    if (!isAstrBotInstalled) {
+      throw StateError('AstrBot 环境未安装完整');
+    }
+    await _prepareEnvironmentScripts();
+    final command = 'source ${RuntimeEnvir.homePath}/common.sh\n'
+        'login_ubuntu "cd /root/AstrBot && touch .astrbot && '
+        '/root/.local/bin/uv run --no-sync astrbot password; '
+        'printf \'\\n密码命令已结束，可返回主页重新启动 AstrBot。\\n\'; '
+        'exec /bin/bash -il"\n';
+    await terminalTabManager.addCommandTerminalTab(
+      title: '重置面板密码',
+      command: command,
+    );
   }
 
   Future<void> _patchAstrBotDashboardPortConfig(File file) async {

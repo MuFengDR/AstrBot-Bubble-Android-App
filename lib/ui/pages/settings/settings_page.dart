@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
@@ -350,24 +351,62 @@ class _SettingsPageState extends State<SettingsPage> {
 
   // 版本号比较
   int _compareVersions(String v1, String v2) {
-    final parts1 = _versionNumbers(v1);
-    final parts2 = _versionNumbers(v2);
+    final parts1 = _parseVersion(v1);
+    final parts2 = _parseVersion(v2);
+    final core1 = parts1.$1;
+    final core2 = parts2.$1;
 
     for (int i = 0; i < 3; i++) {
-      final p1 = i < parts1.length ? parts1[i] : 0;
-      final p2 = i < parts2.length ? parts2[i] : 0;
+      final p1 = i < core1.length ? core1[i] : 0;
+      final p2 = i < core2.length ? core2[i] : 0;
       if (p1 > p2) return 1;
       if (p1 < p2) return -1;
+    }
+
+    final pre1 = parts1.$2;
+    final pre2 = parts2.$2;
+    if (pre1.isEmpty && pre2.isEmpty) return 0;
+    if (pre1.isEmpty) return 1;
+    if (pre2.isEmpty) return -1;
+
+    final length = math.max(pre1.length, pre2.length);
+    for (int i = 0; i < length; i++) {
+      if (i >= pre1.length) return -1;
+      if (i >= pre2.length) return 1;
+
+      final p1 = pre1[i];
+      final p2 = pre2[i];
+      if (p1 is int && p2 is int) {
+        if (p1 != p2) return p1.compareTo(p2);
+      } else if (p1 is int) {
+        return -1;
+      } else if (p2 is int) {
+        return 1;
+      } else {
+        final compared = p1.toString().compareTo(p2.toString());
+        if (compared != 0) return compared;
+      }
     }
     return 0;
   }
 
-  List<int> _versionNumbers(String version) {
-    final normalized = version.replaceFirst(RegExp(r'^v'), '').split('+').first;
-    return normalized.split('.').map((part) {
-      final match = RegExp(r'^\d+').firstMatch(part);
-      return int.tryParse(match?.group(0) ?? '') ?? 0;
+  (List<int>, List<Object>) _parseVersion(String version) {
+    final normalized =
+        version.trim().replaceFirst(RegExp(r'^[vV]'), '').split('+').first;
+    final separator = normalized.indexOf('-');
+    final coreText =
+        separator < 0 ? normalized : normalized.substring(0, separator);
+    final prereleaseText =
+        separator < 0 ? '' : normalized.substring(separator + 1);
+    final core =
+        coreText.split('.').map((part) => int.tryParse(part) ?? 0).toList();
+    final prerelease = RegExp(r'[A-Za-z]+|\d+')
+        .allMatches(prereleaseText.toLowerCase())
+        .map<Object>((match) {
+      final value = match.group(0)!;
+      return int.tryParse(value) ?? value;
     }).toList();
+    return (core, prerelease);
   }
 
   // 显示更新对话框

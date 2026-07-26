@@ -129,6 +129,47 @@ class _TerminalTabViewState extends State<TerminalTabView> {
     _showTopSnack(context, '已复制选中内容');
   }
 
+  Future<void> _showSelectionMenu(
+    TerminalTab tab,
+    Offset globalPosition,
+  ) async {
+    if (_selectedText(tab) == null || !mounted) return;
+
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final localPosition = overlay.globalToLocal(globalPosition);
+    final position = RelativeRect.fromLTRB(
+      localPosition.dx,
+      localPosition.dy,
+      (overlay.size.width - localPosition.dx).clamp(0.0, overlay.size.width),
+      (overlay.size.height - localPosition.dy).clamp(0.0, overlay.size.height),
+    );
+    final action = await showMenu<String>(
+      context: context,
+      position: position,
+      items: const [
+        PopupMenuItem<String>(
+          value: 'copy',
+          height: 42,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.content_copy, size: 18),
+              SizedBox(width: 8),
+              Text('复制'),
+            ],
+          ),
+        ),
+      ],
+    );
+    if (action != 'copy' || !mounted) return;
+
+    final text = _selectedText(tab);
+    if (text == null) return;
+    await Clipboard.setData(ClipboardData(text: text));
+    tab.controller.clearSelection();
+    if (mounted) _showTopSnack(context, '已复制选中内容');
+  }
+
   Future<void> _copyAll(
     BuildContext context,
     TerminalTabManager manager,
@@ -565,6 +606,8 @@ class _TerminalTabViewState extends State<TerminalTabView> {
             backgroundOpacity: 0,
             textStyle: TerminalStyle(fontSize: _terminalFontSize),
             theme: ManjaroTerminalTheme(),
+            onSelectionCompleted: (position) =>
+                _showSelectionMenu(tab, position),
           ),
         ),
       ),
@@ -634,9 +677,8 @@ class _TerminalTabViewState extends State<TerminalTabView> {
       padding: const EdgeInsets.only(right: 6),
       child: OutlinedButton(
         style: _shortcutButtonStyle(selected: _ctrlActive),
-        onPressed: enabled
-            ? () => setState(() => _ctrlActive = !_ctrlActive)
-            : null,
+        onPressed:
+            enabled ? () => setState(() => _ctrlActive = !_ctrlActive) : null,
         child: const Text('CTRL'),
       ),
     );
