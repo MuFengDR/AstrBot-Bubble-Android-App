@@ -17,12 +17,14 @@ class DiagnosticItem {
   final String title;
   DiagnosticStatus status;
   String detail;
+  String reportSummary;
   String reportDetail;
 
   DiagnosticItem(
     this.title, {
     this.status = DiagnosticStatus.pending,
     this.detail = '',
+    this.reportSummary = '',
     this.reportDetail = '',
   });
 }
@@ -53,7 +55,9 @@ class DiagnosticReport {
         _ => '[未完成]',
       };
       if (item.reportDetail.isNotEmpty) {
-        out.writeln('$mark ${item.title}：');
+        out.writeln(
+          '$mark ${item.title}：${item.reportSummary}',
+        );
         out.writeln(item.reportDetail);
       } else {
         out.writeln(
@@ -73,6 +77,48 @@ class _ConfigInfo {
   const _ConfigInfo(this.id, this.name, this.data);
 }
 
+class _NapCatDiagnosticAccount {
+  final Map<String, dynamic> instance;
+  final NapCatWebSocketClient? client;
+  final AstrBotOneBotAdapter? adapter;
+  final BotBindingConfigState bindingState;
+
+  const _NapCatDiagnosticAccount({
+    required this.instance,
+    required this.client,
+    required this.adapter,
+    required this.bindingState,
+  });
+
+  String get name => instance['name']?.toString().trim().isNotEmpty == true
+      ? instance['name'].toString()
+      : '未命名账号';
+  String get qq => instance['qq']?.toString().trim() ?? '';
+  int get webUiPort =>
+      int.tryParse(instance['webUiPort']?.toString() ?? '') ?? -1;
+  bool get running => instance['running'] == true;
+}
+
+class _BotDiagnosticContext {
+  final List<_NapCatDiagnosticAccount> accounts;
+  final List<AstrBotOneBotAdapter> adapters;
+
+  const _BotDiagnosticContext({
+    required this.accounts,
+    required this.adapters,
+  });
+
+  List<_NapCatDiagnosticAccount> get runningAccounts =>
+      accounts.where((account) => account.running).toList();
+}
+
+class _ConfigRoutingInfo {
+  final Map<String, String> names;
+  final Map<String, String> routes;
+
+  const _ConfigRoutingInfo({required this.names, required this.routes});
+}
+
 @visibleForTesting
 Object? firstNonEmptyDiagnosticValue(Iterable<Object?> values) {
   for (final value in values) {
@@ -83,6 +129,55 @@ Object? firstNonEmptyDiagnosticValue(Iterable<Object?> values) {
   }
   return null;
 }
+
+@visibleForTesting
+List<String> diagnosticConfigIdsForAdapter(
+  String adapterId,
+  Map<String, String> routes,
+) {
+  final ids = <String>[];
+  for (final entry in routes.entries) {
+    final parts = entry.key.split(':');
+    if (parts.length != 3 || !_diagnosticWildcardMatch(parts[0], adapterId)) {
+      continue;
+    }
+    if (!ids.contains(entry.value)) ids.add(entry.value);
+  }
+  return ids.isEmpty ? const ['default'] : ids;
+}
+
+bool _diagnosticWildcardMatch(String pattern, String value) {
+  if (pattern.isEmpty || pattern == '*') return true;
+  final escaped = RegExp.escape(pattern).replaceAll(r'\*', '.*');
+  return RegExp('^$escaped\$').hasMatch(value);
+}
+
+@visibleForTesting
+bool diagnosticProcessIsHealthy({
+  required bool astrBotRunning,
+  required int runningAccountCount,
+}) =>
+    astrBotRunning && runningAccountCount > 0;
+
+@visibleForTesting
+bool diagnosticConnectionsAreHealthy({
+  required bool astrBotRunning,
+  required Iterable<BotBindingConfigState> runningBindings,
+}) {
+  final states = runningBindings.toList();
+  return astrBotRunning &&
+      states.isNotEmpty &&
+      states.every((state) => state == BotBindingConfigState.configured);
+}
+
+@visibleForTesting
+String diagnosticBindingStateLabel(BotBindingConfigState state) =>
+    switch (state) {
+      BotBindingConfigState.configured => '已绑定BOT',
+      BotBindingConfigState.disabled => '已禁用BOT',
+      BotBindingConfigState.mismatch => 'BOT绑定异常',
+      BotBindingConfigState.unconfigured => '未绑定BOT',
+    };
 
 class DiagnosticService {
   static const preferenceKey = 'astrbot_diagnostic_model_preference';
@@ -103,6 +198,8 @@ class DiagnosticService {
   final ValueChanged<DiagnosticItem>? onChanged;
   bool _cancelled = false;
   List<_ConfigInfo>? _configs;
+  _BotDiagnosticContext? _botContext;
+  _ConfigRoutingInfo? _routingInfo;
 
   DiagnosticService(this.controller, {this.onChanged});
 
@@ -131,7 +228,7 @@ class DiagnosticService {
             await _checkEnvironment(item);
             break;
           case 3:
-            _checkProcesses(item);
+            await _checkProcesses(item);
             break;
           case 4:
             await _checkBindings(item);
@@ -196,72 +293,117 @@ class DiagnosticService {
       ..detail = missing.isEmpty ? '所有环境均已安装' : '未安装完整：${missing.join('、')}';
   }
 
-  void _checkProcesses(DiagnosticItem item) {
+  Future<_BotDiagnosticContext> _loadBotContext() async {
+    if (_botContext != null) return _botContext!;
+    final adapters = await controller.listAstrBotOneBotAdapters();
+    final accounts = <_NapCatDiagnosticAccount>[];
+    for (final raw in controller.napCatInstances) {
+      final instance = Map<String, dynamic>.from(raw);
+      final qq = instance['qq']?.toString().trim() ?? '';
+      if (qq.isEmpty) continue;
+      final id = instance['id']?.toString() ?? '';
+      final boundClientName = instance['boundWebSocketName']?.toString() ?? '';
+      final boundAdapterId = instance['boundAdapterId']?.toString() ?? '';
+      final clients = id.isEmpty
+          ? const <NapCatWebSocketClient>[]
+          : await controller.listNapCatWebSocketClients(id);
+      final client =
+          clients.where((entry) => entry.name == boundClientName).firstOrNull;
+      final adapter =
+          adapters.where((entry) => entry.id == boundAdapterId).firstOrNull;
+      accounts.add(
+        _NapCatDiagnosticAccount(
+          instance: instance,
+          client: client,
+          adapter: adapter,
+          bindingState: controller.compareBotBinding(client, adapter),
+        ),
+      );
+    }
+    return _botContext = _BotDiagnosticContext(
+      accounts: accounts,
+      adapters: adapters,
+    );
+  }
+
+  Future<void> _checkProcesses(DiagnosticItem item) async {
     final astrBotRunning = controller.isAstrBotActive;
-    final hasNapCatAccount = controller.napCatInstances.isNotEmpty;
-    final napCatRunning =
-        controller.napCatInstances.any((entry) => entry['running'] == true);
+    final context = await _loadBotContext();
+    final configured = context.accounts.length;
+    final running = context.runningAccounts.length;
 
     final details = <String>[
       'AstrBot ${astrBotRunning ? '运行正常' : '未运行'}',
-      if (!hasNapCatAccount)
-        'NapCat 未添加账号'
+      if (configured == 0)
+        'NapCat 没有已登录账号'
+      else if (running == 0)
+        'NapCat 未运行（0/$configured）'
       else
-        'NapCat ${napCatRunning ? '运行正常' : '未运行'}',
+        'NapCat 运行正常（$running/$configured）',
+    ];
+    final summary = details.join('；');
+    final processLines = <String>[
+      '\tAstrBot ${ServicePorts.dashboardPort} ${astrBotRunning ? '正常运行' : '未运行'}',
+      ...context.accounts.map(
+        (account) =>
+            '\t${account.name} ${account.qq} ${account.webUiPort < 0 ? '端口未配置' : account.webUiPort} '
+            '${account.running ? '正常运行' : '未运行'}',
+      ),
     ];
     item
-      ..status = !astrBotRunning
-          ? DiagnosticStatus.failed
-          : !hasNapCatAccount
-              ? DiagnosticStatus.warning
-              : napCatRunning
-                  ? DiagnosticStatus.passed
-                  : DiagnosticStatus.failed
-      ..detail = details.join('；');
+      ..status = diagnosticProcessIsHealthy(
+        astrBotRunning: astrBotRunning,
+        runningAccountCount: running,
+      )
+          ? DiagnosticStatus.passed
+          : DiagnosticStatus.failed
+      ..detail = summary
+      ..reportSummary = '$summary：'
+      ..reportDetail = processLines.join('\n');
   }
 
   Future<void> _checkBindings(DiagnosticItem item) async {
-    if (controller.napCatInstances.isEmpty) {
-      item
-        ..status = DiagnosticStatus.warning
-        ..detail = '未添加 NapCat 账号，无法检查连接';
-      return;
-    }
+    final context = await _loadBotContext();
+    final routing = await _loadConfigRoutingInfo();
+    final running = context.runningAccounts;
+    final invalid = running
+        .where((account) =>
+            account.bindingState != BotBindingConfigState.configured)
+        .length;
+    final passed = diagnosticConnectionsAreHealthy(
+      astrBotRunning: controller.isAstrBotActive,
+      runningBindings: running.map((account) => account.bindingState),
+    );
 
-    final adapters = await controller.listAstrBotOneBotAdapters();
-    var configured = 0;
-    var matched = 0;
-    for (final instance in controller.napCatInstances) {
-      final id = instance['id']?.toString() ?? '';
-      if (id.isEmpty) continue;
-      final clients = await controller.listNapCatWebSocketClients(id);
-      for (final client in clients) {
-        if (!client.enabled || client.port == null) continue;
-        configured++;
-        if (adapters.any(
-          (adapter) =>
-              adapter.enabled &&
-              adapter.port == client.port &&
-              adapter.token == client.token,
-        )) {
-          matched++;
-        }
-      }
-    }
-
-    if (configured == 0) {
-      item
-        ..status = DiagnosticStatus.failed
-        ..detail = 'NapCat 没有启用 WebSocket 连接';
-    } else if (matched == configured) {
-      item
-        ..status = DiagnosticStatus.passed
-        ..detail = '$matched 个连接的端口和 Token 均正确';
-    } else {
-      item
-        ..status = DiagnosticStatus.failed
-        ..detail = '有 ${configured - matched} 个连接的端口或 Token 不一致';
-    }
+    final adapterLines = context.adapters.map((adapter) {
+      final configNames =
+          diagnosticConfigIdsForAdapter(adapter.id, routing.routes)
+              .map(_configDisplayName)
+              .join('、');
+      return '\t\t${adapter.id} ${adapter.port} $configNames '
+          '${adapter.enabled ? '已启用' : '未启用'}';
+    });
+    final socketLines = context.accounts.map((account) {
+      final port = account.client?.port?.toString() ?? '端口未配置';
+      final state = !account.running
+          ? '未运行'
+          : diagnosticBindingStateLabel(account.bindingState);
+      return '\t\t${account.name} ${account.qq} $port $state';
+    });
+    item
+      ..status = passed ? DiagnosticStatus.passed : DiagnosticStatus.failed
+      ..detail = passed
+          ? '连接正常（${running.length} 个运行账号）'
+          : running.isEmpty
+              ? '连接异常：没有已登录且正在运行的账号'
+              : '连接异常：$invalid 个运行账号连接异常'
+      ..reportSummary = passed ? '连接正常' : '连接异常'
+      ..reportDetail = <String>[
+        '\tAstrBot适配器：',
+        if (context.adapters.isEmpty) '\t\t（无）' else ...adapterLines,
+        '\twebsocket适配器：',
+        if (context.accounts.isEmpty) '\t\t（无已登录账号）' else ...socketLines,
+      ].join('\n');
   }
 
   Future<List<_ConfigInfo>> _readConfigs() async {
@@ -297,13 +439,99 @@ class DiagnosticService {
     return configs;
   }
 
+  Future<_ConfigRoutingInfo> _loadConfigRoutingInfo() async {
+    if (_routingInfo != null) return _routingInfo!;
+    final configs = await _readConfigs();
+    final names = <String, String>{
+      for (final config in configs)
+        config.id: config.id == 'default' ? 'default' : config.name,
+    };
+    final routes = <String, String>{};
+    final defaultConfig =
+        configs.where((config) => config.id == 'default').first;
+    final dashboard = _asMap(defaultConfig.data['dashboard']);
+    final username = dashboard['username']?.toString() ?? '';
+    final secret = dashboard['jwt_secret']?.toString() ?? '';
+    if (!controller.isAstrBotActive || username.isEmpty || secret.isEmpty) {
+      return _routingInfo = _ConfigRoutingInfo(names: names, routes: routes);
+    }
+
+    try {
+      final jwt = _createJwt(username, secret);
+      final responses = await Future.wait([
+        http.get(
+          Uri.parse('${ServicePorts.dashboardUrl}/api/config/abconfs'),
+          headers: {'Authorization': 'Bearer $jwt'},
+        ).timeout(const Duration(seconds: 10)),
+        http.get(
+          Uri.parse(
+              '${ServicePorts.dashboardUrl}/api/config/umo_abconf_routes'),
+          headers: {'Authorization': 'Bearer $jwt'},
+        ).timeout(const Duration(seconds: 10)),
+      ]);
+      final configData = _responseData(responses[0]);
+      final infoList = configData['info_list'];
+      if (infoList is List) {
+        for (final raw in infoList.whereType<Map>()) {
+          final id = raw['id']?.toString() ?? '';
+          final name = raw['name']?.toString().trim() ?? '';
+          if (id.isNotEmpty) names[id] = name.isEmpty ? id : name;
+        }
+      }
+      final routeData = _responseData(responses[1]);
+      final rawRoutes = routeData['routing'];
+      if (rawRoutes is Map) {
+        for (final entry in rawRoutes.entries) {
+          routes[entry.key.toString()] = entry.value.toString();
+        }
+      }
+    } catch (_) {
+      // Older AstrBot versions may not expose these endpoints. UUIDs and the
+      // default configuration remain usable as a safe fallback.
+    }
+    return _routingInfo = _ConfigRoutingInfo(names: names, routes: routes);
+  }
+
+  Map<String, dynamic> _responseData(http.Response response) {
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      return const {};
+    }
+    final decoded = jsonDecode(response.body);
+    final data = decoded is Map ? decoded['data'] : null;
+    return data is Map ? Map<String, dynamic>.from(data) : const {};
+  }
+
+  String _configDisplayName(String id) =>
+      _routingInfo?.names[id] ?? (id == 'default' ? 'default' : id);
+
+  Set<String> _activeConfigIds(_BotDiagnosticContext context) {
+    final routes = _routingInfo?.routes ?? const <String, String>{};
+    return context.runningAccounts
+        .where((account) => account.adapter != null)
+        .expand((account) =>
+            diagnosticConfigIdsForAdapter(account.adapter!.id, routes))
+        .toSet();
+  }
+
   Future<void> _summarizeConfigs(DiagnosticItem item) async {
     final configs = await _readConfigs();
+    await _loadConfigRoutingInfo();
+    final context = await _loadBotContext();
+    final activeIds = _activeConfigIds(context);
+    final relevantConfigs =
+        configs.where((config) => activeIds.contains(config.id)).toList();
+    final missingIds =
+        activeIds.difference(configs.map((config) => config.id).toSet());
     final summaries = <String>[];
     final reportSections = <String>[];
-    var hasProblem = false;
+    var hasProblem = relevantConfigs.isEmpty || missingIds.isNotEmpty;
 
-    for (final config in configs) {
+    for (final id in missingIds) {
+      summaries.add('${_configDisplayName(id)}：配置文件不存在');
+      reportSections.add('\t${_configDisplayName(id)}：\n\t\t配置文件不存在');
+    }
+
+    for (final config in relevantConfigs) {
       final providers = _findProviders(config.data);
       final enabled =
           providers.where((provider) => provider['enable'] != false).length;
@@ -333,7 +561,7 @@ class DiagnosticService {
       final activeReply = _asMap(settings['active_reply']);
       final plugins = _resolvePluginNames(config.data['plugin_set']);
       summaries.add(
-        '${config.name} (${config.id})：模型 $enabled/${providers.length}，'
+        '${_configDisplayName(config.id)}：模型 $enabled/${providers.length}，'
         '默认模型 ${defaultId.isEmpty ? '未配置' : defaultId}'
         '${defaultId.isNotEmpty && !defaultOk ? '（不可用）' : ''}，'
         '管理员 $admins，唤醒词 ${_displayValue(wake)}',
@@ -360,8 +588,10 @@ class DiagnosticService {
 
     item
       ..status = hasProblem ? DiagnosticStatus.failed : DiagnosticStatus.passed
-      ..detail = summaries.join('\n')
-      ..reportDetail = reportSections.join('\n\n');
+      ..detail = summaries.isEmpty ? '没有已运行账号可映射到配置文件' : summaries.join('\n')
+      ..reportDetail = reportSections.isEmpty
+          ? '\t（没有已运行账号可映射到配置文件）'
+          : reportSections.join('\n\n');
   }
 
   String _buildConfigReport({
@@ -385,7 +615,7 @@ class DiagnosticService {
     final whitelist = activeReply['whitelist'];
     final whitelistCount = whitelist is List ? whitelist.length : 0;
     final lines = <String>[
-      '\t${config.id}：',
+      '\t${_configDisplayName(config.id)}：',
       '\t\t模型：$enabledProviders/$providerCount',
       '\t\t默认模型：$defaultModel',
       '\t\t管理员：$admins',
@@ -440,6 +670,11 @@ class DiagnosticService {
 
   Future<void> _testModels(DiagnosticItem item) async {
     final configs = await _readConfigs();
+    await _loadConfigRoutingInfo();
+    final context = await _loadBotContext();
+    final activeIds = _activeConfigIds(context);
+    final relevantConfigs =
+        configs.where((config) => activeIds.contains(config.id)).toList();
     final defaultConfig =
         configs.where((config) => config.id == 'default').first;
     final dashboard = defaultConfig.data['dashboard'];
@@ -460,17 +695,27 @@ class DiagnosticService {
 
     final jwt = _createJwt(username, secret);
     final results = <String>[];
-    var hasFailure = false;
+    var hasFailure = relevantConfigs.isEmpty;
     var tested = 0;
-    for (final config in configs) {
+    final missingIds =
+        activeIds.difference(configs.map((config) => config.id).toSet());
+    for (final id in missingIds) {
+      results.add('${_configDisplayName(id)}：配置文件不存在');
+      hasFailure = true;
+    }
+    if (relevantConfigs.isEmpty && missingIds.isEmpty) {
+      results.add('没有已运行账号可映射到配置文件');
+    }
+    for (final config in relevantConfigs) {
       if (_cancelled) return;
+      final configName = _configDisplayName(config.id);
       final settings = config.data['provider_settings'];
       final providerId = settings is Map
           ? settings['default_provider_id']?.toString() ?? ''
           : '';
       if (providerId.isEmpty) {
         hasFailure = true;
-        results.add('${config.name}：未配置默认模型');
+        results.add('$configName：未配置默认模型');
         continue;
       }
       tested++;
@@ -482,7 +727,7 @@ class DiagnosticService {
           headers: {'Authorization': 'Bearer $jwt'},
         ).timeout(const Duration(seconds: 120));
         if (response.statusCode == 404) {
-          results.add('${config.name}：当前 AstrBot 版本不支持自动测试');
+          results.add('$configName：当前 AstrBot 版本不支持自动测试');
           continue;
         }
         final body = jsonDecode(response.body);
@@ -491,16 +736,16 @@ class DiagnosticService {
         if (response.statusCode >= 200 &&
             response.statusCode < 300 &&
             available) {
-          results.add('${config.name}：$providerId 连接正常');
+          results.add('$configName：$providerId 连接正常');
         } else {
           hasFailure = true;
           final error = data is Map ? data['error'] : null;
           results.add(
-              '${config.name}：$providerId 连接失败${error == null ? '' : '，${_safeError(error)}'}');
+              '$configName：$providerId 连接失败${error == null ? '' : '，${_safeError(error)}'}');
         }
       } on TimeoutException {
         hasFailure = true;
-        results.add('${config.name}：$providerId 测试超过 120 秒');
+        results.add('$configName：$providerId 测试超过 120 秒');
       }
     }
 
