@@ -15,6 +15,7 @@ import '../../controllers/terminal_controller.dart';
 import '../../../core/constants/scripts.dart' as scripts;
 import '../../../core/services/password_manager.dart';
 import '../../../core/config/app_config.dart';
+import '../../widgets/diagnostic_dialog.dart';
 
 class SettingsPage extends StatefulWidget {
   final WebViewController astrBotController;
@@ -1122,6 +1123,12 @@ class _SettingsPageState extends State<SettingsPage> {
             '设置',
             style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
           ),
+        ),
+        ListTile(
+          leading: const Icon(Icons.health_and_safety_outlined),
+          title: const Text('自诊断'),
+          subtitle: const Text('检查环境、进程、连接和 AstrBot 配置'),
+          onTap: () => showDiagnosticDialog(context, Get.find<HomeController>()),
         ),
         ListTile(
           leading: const Icon(Icons.info_outline),
