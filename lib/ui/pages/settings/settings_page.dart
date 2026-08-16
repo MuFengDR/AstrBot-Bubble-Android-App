@@ -1,6 +1,7 @@
-import 'dart:io';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
@@ -15,6 +16,7 @@ import '../../controllers/terminal_controller.dart';
 import '../../../core/constants/scripts.dart' as scripts;
 import '../../../core/services/password_manager.dart';
 import '../../../core/config/app_config.dart';
+import '../../../core/config/environment_config.dart';
 import '../../widgets/diagnostic_dialog.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -59,6 +61,24 @@ class _SettingsPageState extends State<SettingsPage> {
 
   String _displayVersion(String version) {
     return version.split('+').first.replaceAll('-', ' ');
+  }
+
+  String _githubProxyUrl(String url) {
+    final proxy = EnvironmentConfig.effectiveGithubProxy;
+    if (proxy == EnvironmentConfig.directProxy || proxy.trim().isEmpty) {
+      return url;
+    }
+    return '${proxy.replaceFirst(RegExp(r'/+$'), '')}/$url';
+  }
+
+  String _currentGithubSourceName() {
+    final selected = EnvironmentConfig.githubProxy;
+    if (selected == EnvironmentConfig.autoProxy) {
+      final resolved = EnvironmentConfig.effectiveGithubProxy;
+      return '自动选择（${EnvironmentConfig.labelForProxy(resolved)}）';
+    }
+    if (selected == EnvironmentConfig.directProxy) return 'GitHub 原始链接';
+    return EnvironmentConfig.labelForProxy(selected);
   }
 
   Future<void> _pickHomeBackground() async {
@@ -281,12 +301,12 @@ class _SettingsPageState extends State<SettingsPage> {
       final packageInfo = await PackageInfo.fromPlatform();
       final currentVersion = packageInfo.version;
 
-      // 使用镜像源获取最新版本信息
-      final mirrors = [
-        ...Config.githubApiMirrors.map((mirror) =>
-            '$mirror/${Config.githubApi}${Config.githubReleasesPath}'),
-        '${Config.githubApi}${Config.githubReleasesPath}',
-      ];
+      final apiUrl = '${Config.githubApi}${Config.githubReleasesPath}';
+      final apiFallback =
+          '${Config.githubApiFallback.replaceFirst(RegExp(r'/+$'), '')}/$apiUrl';
+      final selectedProxy = _githubProxyUrl(apiUrl);
+      final mirrors = <String>[apiUrl, apiFallback];
+      if (!mirrors.contains(selectedProxy)) mirrors.add(selectedProxy);
 
       Map<String, dynamic>? releaseData;
 
@@ -301,6 +321,10 @@ class _SettingsPageState extends State<SettingsPage> {
             releaseData = jsonDecode(response.body) as Map<String, dynamic>;
             break;
           }
+          Log.w(
+            '更新源 $mirror 返回 HTTP ${response.statusCode}',
+            tag: 'AstrBot',
+          );
         } catch (e) {
           Log.w('镜像源 $mirror 请求失败: $e', tag: 'AstrBot');
           continue;
@@ -532,19 +556,15 @@ class _SettingsPageState extends State<SettingsPage> {
           '${Config.githubDownloadBase}/$tagName/$apkFileName';
     }
 
-    // 使用原始URL构建各个镜像源的下载链接
     final sources = [
-      ...Config.downloadMirrors.map((mirror) => {
-            'name': mirror['name']!,
-            'icon':
-                mirror['icon'] == 'speed' ? Icons.speed : Icons.cloud_download,
-            'url': '${mirror['url']}/$_originalDownloadUrl',
-          }),
       {
-        'name': 'GitHub原始链接',
-        'icon': Icons.cloud_download,
-        'url': _originalDownloadUrl!,
-        'description': '直接从GitHub官方服务器下载，速度可能较慢',
+        'name': _currentGithubSourceName(),
+        'icon': EnvironmentConfig.effectiveGithubProxy ==
+                EnvironmentConfig.directProxy
+            ? Icons.cloud_download
+            : Icons.speed,
+        'url': _githubProxyUrl(_originalDownloadUrl!),
+        'description': '使用环境管理中选择的 GitHub 加速策略',
       },
     ];
 
@@ -891,33 +911,25 @@ class _SettingsPageState extends State<SettingsPage> {
 
   // 显示自定义 Git Clone 对话框
   void _showCustomGitCloneDialog() async {
-    final scriptPath = '${scripts.ubuntuPath}/root/astrbot-startup.sh';
-    final scriptFile = File(scriptPath);
+    final configFile = File(
+      '${scripts.ubuntuPath}/root/.config/astrbot-android/installer.env',
+    );
 
-    // 检查脚本文件是否存在
-    if (!await scriptFile.exists()) {
-      Get.snackbar(
-        '提示',
-        '启动脚本文件不存在，请先启动一次应用',
-        snackPosition: SnackPosition.BOTTOM,
-        duration: const Duration(seconds: 2),
-      );
-      return;
-    }
-
-    // 读取当前的自定义 Git Clone 命令
     String currentCommand = '';
     try {
-      final content = await scriptFile.readAsString();
-      final match = RegExp(r'^CUSTOM_GIT_CLONE="([^"]*)"$', multiLine: true)
-          .firstMatch(content);
-      if (match != null) {
-        currentCommand = match.group(1) ?? '';
+      if (await configFile.exists()) {
+        final content = await configFile.readAsString();
+        final match = RegExp(r'^CUSTOM_GIT_CLONE_B64=(.*)$', multiLine: true)
+            .firstMatch(content);
+        final encoded = match?.group(1)?.trim() ?? '';
+        if (encoded.isNotEmpty) {
+          currentCommand = utf8.decode(base64Decode(encoded));
+        }
       }
     } catch (e) {
       Get.snackbar(
         '错误',
-        '读取启动脚本失败: $e',
+        '读取安装器设置失败: $e',
         snackPosition: SnackPosition.BOTTOM,
         backgroundColor: Colors.red,
         colorText: Colors.white,
@@ -977,15 +989,25 @@ class _SettingsPageState extends State<SettingsPage> {
       final newCommand = commandController.text.trim();
 
       try {
-        String content = await scriptFile.readAsString();
-
-        // 替换 CUSTOM_GIT_CLONE 变量的值
-        content = content.replaceFirst(
-          RegExp(r'^CUSTOM_GIT_CLONE="[^"]*"$', multiLine: true),
-          'CUSTOM_GIT_CLONE="$newCommand"',
+        await configFile.parent.create(recursive: true);
+        final existing = await configFile.exists()
+            ? await configFile.readAsString()
+            : '';
+        final lines = existing
+            .replaceAll('\r\n', '\n')
+            .split('\n')
+            .where(
+              (line) => !line.startsWith('CUSTOM_GIT_CLONE_B64='),
+            )
+            .where((line) => line.isNotEmpty)
+            .toList();
+        if (newCommand.isNotEmpty) {
+          final encoded = base64Encode(utf8.encode(newCommand));
+          lines.add('CUSTOM_GIT_CLONE_B64=$encoded');
+        }
+        await configFile.writeAsString(
+          lines.isEmpty ? '' : '${lines.join('\n')}\n',
         );
-
-        await scriptFile.writeAsString(content);
         Log.i('已更新自定义 Git Clone 命令: $newCommand', tag: 'AstrBot');
 
         Get.snackbar(
@@ -997,7 +1019,7 @@ class _SettingsPageState extends State<SettingsPage> {
       } catch (e) {
         Get.snackbar(
           '保存失败',
-          '写入启动脚本失败: $e',
+          '写入安装器设置失败: $e',
           snackPosition: SnackPosition.BOTTOM,
           backgroundColor: Colors.red,
           colorText: Colors.white,
@@ -1410,36 +1432,20 @@ class _SettingsPageState extends State<SettingsPage> {
           subtitle: const Text('下次启动时重新扫描并安装所有插件依赖'),
           onTap: () async {
             try {
-              final scriptPath =
-                  '${scripts.ubuntuPath}/root/astrbot-startup.sh';
-              final scriptFile = File(scriptPath);
+              final marker = File(
+                '${scripts.ubuntuPath}/root/.config/astrbot-android/'
+                'flags/reinstall-plugins',
+              );
+              await marker.parent.create(recursive: true);
+              await marker.writeAsString('');
+              Log.i('已设置插件依赖重装标记', tag: 'AstrBot');
 
-              if (await scriptFile.exists()) {
-                String content = await scriptFile.readAsString();
-
-                // 将 REINSTALL_PLUGINS_FLAG=0 修改为 REINSTALL_PLUGINS_FLAG=1
-                content = content.replaceFirst(
-                  RegExp(r'^REINSTALL_PLUGINS_FLAG=0$', multiLine: true),
-                  'REINSTALL_PLUGINS_FLAG=1',
-                );
-
-                await scriptFile.writeAsString(content);
-                Log.i('已设置插件依赖重装标记', tag: 'AstrBot');
-
-                Get.snackbar(
-                  '设置成功',
-                  '下次启动时将重新安装所有插件依赖',
-                  snackPosition: SnackPosition.BOTTOM,
-                  duration: const Duration(seconds: 2),
-                );
-              } else {
-                Get.snackbar(
-                  '提示',
-                  '启动脚本文件不存在，请先启动一次应用',
-                  snackPosition: SnackPosition.BOTTOM,
-                  duration: const Duration(seconds: 2),
-                );
-              }
+              Get.snackbar(
+                '设置成功',
+                '下次启动时将重新安装所有插件依赖',
+                snackPosition: SnackPosition.BOTTOM,
+                duration: const Duration(seconds: 2),
+              );
             } catch (e) {
               Log.e('设置重装标记失败: $e', tag: 'AstrBot');
               Get.snackbar(

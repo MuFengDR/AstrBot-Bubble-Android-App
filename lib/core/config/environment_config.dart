@@ -6,7 +6,7 @@ class EnvironmentConfig {
 
   static const List<Map<String, String>> githubProxyOptions = [
     {'name': '自动选择', 'value': autoProxy},
-    {'name': '直连 (GitHub 原始)', 'value': directProxy},
+    {'name': '直连', 'value': directProxy},
     {'name': 'Ghfast', 'value': 'https://ghfast.top'},
     {'name': 'Gh-Proxy', 'value': 'https://gh-proxy.com'},
     {'name': 'GhProxyNet', 'value': 'https://ghproxy.net'},

@@ -59,11 +59,11 @@ change_ubuntu_source(){
   cat <<EOF > "$UBUNTU_PATH/etc/apt/sources.list"
 # 默认注释了源码镜像以提高 apt update 速度，如有需要可自行取消注释
 # Defaultly commented out source mirrors to speed up apt update, uncomment if needed
-deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble main restricted universe multiverse
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble main restricted universe multiverse
 # deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble main restricted universe multiverse
-deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble-updates main restricted universe multiverse
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble-updates main restricted universe multiverse
 # deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble-updates main restricted universe multiverse
-deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble-backports main restricted universe multiverse
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble-backports main restricted universe multiverse
 # deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble-backports main restricted universe multiverse
 
 # 以下安全更新软件源包含了官方源与镜像站配置，如有需要可自行修改注释切换
@@ -480,6 +480,21 @@ login_ubuntu(){
     ANDROID_TZ="UTC"
   fi
 
+  # Android 会把宿主进程的附加组 ID 传入 PRoot。若 Ubuntu 的
+  # /etc/group 没有对应名称，bash 的 groups 命令会反复打印警告。
+  # 为缺失的数字组补充无权限的占位名称，仅用于消除噪声，不改变权限。
+  if [ -f "$UBUNTU_PATH/etc/group" ]; then
+    for ANDROID_GID in $(id -G 2>/dev/null); do
+      case "$ANDROID_GID" in
+        ''|*[!0-9]*) continue ;;
+      esac
+      if ! grep -qE ":${ANDROID_GID}:" "$UBUNTU_PATH/etc/group"; then
+        printf 'android_gid_%s:x:%s:\n' "$ANDROID_GID" "$ANDROID_GID" \
+          >> "$UBUNTU_PATH/etc/group"
+      fi
+    done
+  fi
+
   exec $BIN/proot \
     -0 \
     -r "$UBUNTU_PATH" \
@@ -509,74 +524,20 @@ login_ubuntu(){
 }
 ''';
 
-// 生成 copyFiles 脚本，需要传入当前版本号
-// Generate copyFiles script with current version
-String getCopyFilesScript(String currentVersion) {
+// 生成完整的通用脚本，需要传入当前版本号
+// Generate common script with current version
+String getInstallerCopyFilesScript() {
   return '''
 copy_files(){
   mkdir -p "\$UBUNTU_PATH/root"
-
-  OLD_GIT_CLONE_LINE=\$(grep -m 1 '^CUSTOM_GIT_CLONE=' "\$UBUNTU_PATH/root/astrbot-startup.sh" 2>/dev/null)
-  cp ~/astrbot-startup.sh "\$UBUNTU_PATH/root/astrbot-startup.sh"
-  if [ -n "\$OLD_GIT_CLONE_LINE" ] && echo "\$OLD_GIT_CLONE_LINE" | grep -Eq '^CUSTOM_GIT_CLONE="[A-Za-z0-9._:/?&=%+@# -]*"\$' && ! echo "\$OLD_GIT_CLONE_LINE" | grep -q '=""\$'; then
-    OLD_GIT_CLONE_VALUE=\$(printf '%s' "\$OLD_GIT_CLONE_LINE" | sed 's/^CUSTOM_GIT_CLONE="//; s/"\$//')
-    OLD_GIT_CLONE_ESCAPED=\$(printf '%s' "\$OLD_GIT_CLONE_VALUE" | sed 's/[&|]/\\\\&/g')
-    sed -i "s|^CUSTOM_GIT_CLONE=.*|CUSTOM_GIT_CLONE=\\"\$OLD_GIT_CLONE_ESCAPED\\"|" "\$UBUNTU_PATH/root/astrbot-startup.sh"
-    echo "startup script refreshed, custom git clone preserved"
-  else
-    if [ -n "\$OLD_GIT_CLONE_LINE" ]; then
-      echo "startup script refreshed, invalid custom git clone ignored"
-    fi
-    echo "startup script refreshed"
-  fi
+  cp ~/astrbot-installer-bootstrap.sh "\$UBUNTU_PATH/root/astrbot-installer-bootstrap.sh"
+  chmod 700 "\$UBUNTU_PATH/root/astrbot-installer-bootstrap.sh"
   cp ~/cmd_config.json "\$UBUNTU_PATH/root/cmd_config.json"
-  return 0
-
-  # 当前版本号（从 pubspec.yaml 通过 PackageInfo 获取）
-  CURRENT_VERSION="$currentVersion"
-
-  # 初始化标志
-  SHOULD_COPY=1
-  EXISTING_VERSION=""
-
-  # 检查旧脚本是否存在并提取版本
-  if [ -f "\$UBUNTU_PATH/root/astrbot-startup.sh" ]; then
-    EXISTING_VERSION=\$(grep '^ASTRBOT_APP_VERSION=' "\$UBUNTU_PATH/root/astrbot-startup.sh" 2>/dev/null | cut -d'"' -f2)
-  fi
-
-  # 判断是否需要复制
-  if [ "\$EXISTING_VERSION" = "\$CURRENT_VERSION" ]; then
-    SHOULD_COPY=0
-  fi
-
-  if [ "\$SHOULD_COPY" -eq 1 ]; then
-    # 提取旧脚本的完整 CUSTOM_GIT_CLONE 行(保留原始格式)
-    OLD_GIT_CLONE_LINE=\$(grep '^CUSTOM_GIT_CLONE=' "\$UBUNTU_PATH/root/astrbot-startup.sh" 2>/dev/null)
-
-    # 复制新启动脚本
-    cp ~/astrbot-startup.sh "\$UBUNTU_PATH/root/astrbot-startup.sh"
-
-    # 如果旧脚本有自定义 Git Clone 配置(非空值),则替换新脚本中的默认值
-    if [ -n "\$OLD_GIT_CLONE_LINE" ] && ! echo "\$OLD_GIT_CLONE_LINE" | grep -q '=""\$'; then
-      # 直接替换整行,保持用户原始配置
-      sed -i "s|^CUSTOM_GIT_CLONE=.*|\$OLD_GIT_CLONE_LINE|" "\$UBUNTU_PATH/root/astrbot-startup.sh"
-      echo "启动脚本版本不一致(现有: \$EXISTING_VERSION, 当前: \$CURRENT_VERSION)，已更新启动脚本"
-      echo "✓ 已保留自定义 Git Clone 配置"
-    else
-      echo "启动脚本版本不一致(现有: \$EXISTING_VERSION, 当前: \$CURRENT_VERSION)，已更新启动脚本"
-    fi
-  else
-    echo -e "\\033[32m启动脚本版本一致(\$CURRENT_VERSION)，无需更新\\033[0m"
-  fi
-
-  # cmd_config.json 每次都复制（保持原有逻辑）
-  cp ~/cmd_config.json "\$UBUNTU_PATH/root/cmd_config.json"
+  echo "installer bootstrap refreshed"
 }
 ''';
 }
 
-// 生成完整的通用脚本，需要传入当前版本号
-// Generate common script with current version
 String getCommonScript(String currentVersion) {
   return '''
 $common
@@ -584,7 +545,7 @@ $changeUbuntuNobleSource
 $installUbuntu
 $setupFakeSysdata
 $loginUbuntu
-${getCopyFilesScript(currentVersion)}
+${getInstallerCopyFilesScript()}
 clear_lines
 start_astrbot(){
   login_ubuntu "export TMPDIR='${RuntimeEnvir.tmpPath}'; export ASTRBOT_DASHBOARD_PORT='${ServicePorts.dashboardPort}'; if [ ! -x /root/.local/bin/uv ] || [ ! -d /root/AstrBot ] || [ ! -f /root/AstrBot/pyproject.toml ] || [ ! -f /root/AstrBot/main.py ] || [ ! -d /root/AstrBot/.venv ]; then echo __ASTRBOT_MANUAL_ENV_REQUIRED__; echo 'AstrBot 环境未安装完整，请到主页环境管理安装。'; exit 1; fi; cd /root/AstrBot; echo 'AstrBot 启动中'; /root/.local/bin/uv run --no-sync main.py"

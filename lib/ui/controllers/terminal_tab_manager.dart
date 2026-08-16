@@ -95,8 +95,9 @@ class TerminalTabManager extends GetxController {
 
   /// 初始化固定的AstrBot终端标签页
   void initializeFixedTab(Terminal terminal) {
-    // 清空现有标签页
-    tabs.clear();
+    final activeTabId = activeTab?.id;
+    final existingSystemTabs =
+        tabs.where((tab) => tab.type == TerminalTabType.system).toList();
 
     // 添加固定的AstrBot终端标签页
     final fixedTab = TerminalTab(
@@ -109,8 +110,11 @@ class TerminalTabManager extends GetxController {
       isActive: true,
     );
 
-    tabs.add(fixedTab);
-    activeTabIndex.value = 0;
+    tabs.assignAll([fixedTab, ...existingSystemTabs]);
+    final preservedActiveIndex = activeTabId == null
+        ? -1
+        : tabs.indexWhere((tab) => tab.id == activeTabId);
+    activeTabIndex.value = preservedActiveIndex >= 0 ? preservedActiveIndex : 0;
   }
 
   /// 添加新的系统终端标签页
@@ -237,8 +241,13 @@ class TerminalTabManager extends GetxController {
   Future<void> addCommandTerminalTab({
     required String title,
     required String command,
+    bool showInTerminal = true,
     String? onDoneMarker,
     void Function()? onCommandDone,
+    void Function(String output)? onOutput,
+    void Function(int exitCode)? onCommandExit,
+    void Function(void Function() cancel)? onStarted,
+    bool preserveTabOnCancel = false,
   }) async {
     try {
       final tabId = 'command_${DateTime.now().millisecondsSinceEpoch}';
@@ -265,37 +274,77 @@ class TerminalTabManager extends GetxController {
         isActive: true,
       );
 
-      for (var tab in tabs) {
-        tab.isActive = false;
+      if (showInTerminal) {
+        for (var tab in tabs) {
+          tab.isActive = false;
+        }
+        tabs.add(newTab);
+        activeTabIndex.value = tabs.length - 1;
       }
-      tabs.add(newTab);
-      activeTabIndex.value = tabs.length - 1;
 
       var doneNotified = false;
+      var outputFinished = false;
+      var markerBuffer = '';
+      int? exitCode;
+      void notifyExit() {
+        if (!doneNotified && outputFinished && exitCode != null) {
+          onCommandExit?.call(exitCode!);
+        }
+      }
       newPty.output
           .cast<List<int>>()
           .transform(const Utf8Decoder(allowMalformed: true))
-          .listen((event) {
-        newTab.appendLog(event);
-        newTerminal.write(event);
-        if (!doneNotified &&
-            onDoneMarker != null &&
-            _containsDoneMarker(event, onDoneMarker)) {
-          doneNotified = true;
-          onCommandDone?.call();
-        }
+          .listen(
+            (event) {
+              if (showInTerminal) {
+                newTab.appendLog(event);
+                newTerminal.write(event);
+              }
+              onOutput?.call(event);
+              markerBuffer += event;
+              if (!doneNotified &&
+                  onDoneMarker != null &&
+                  _containsDoneMarker(markerBuffer, onDoneMarker)) {
+                doneNotified = true;
+                onCommandDone?.call();
+              }
+              if (markerBuffer.length > 4096) {
+                markerBuffer =
+                    markerBuffer.substring(markerBuffer.length - 4096);
+              }
+            },
+            onDone: () {
+              outputFinished = true;
+              notifyExit();
+            },
+          );
+
+      newPty.exitCode.then((code) {
+        exitCode = code;
+        notifyExit();
       });
 
       newPty.writeString(command);
+      onStarted?.call(() {
+        if (showInTerminal && !preserveTabOnCancel) {
+          final index = tabs.indexWhere((tab) => tab.id == tabId);
+          if (index >= 0) closeTab(index);
+        } else {
+          newPty.kill();
+        }
+      });
     } catch (e) {
       Log.e('添加命令终端标签页失败: $e', tag: 'TerminalTabManager');
       Get.snackbar('错误', '创建命令终端失败: $e');
+      onCommandExit?.call(-1);
     }
   }
 
   bool _containsDoneMarker(String event, String marker) {
     final normalized = event.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
-    return normalized.split('\n').any((line) => line.trim() == marker);
+    // PTY output may wrap a marker at the terminal width. Ignore whitespace
+    // introduced by wrapping while keeping the marker itself exact.
+    return normalized.replaceAll(RegExp(r'\s+'), '').contains(marker);
   }
 
   /// 切换到指定标签页

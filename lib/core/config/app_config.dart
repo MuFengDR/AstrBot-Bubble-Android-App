@@ -1,5 +1,3 @@
-const bool product = bool.fromEnvironment('dart.vm.product');
-
 class Config {
   // Ubuntu系统镜像文件名
   static const String ubuntuFileName = 'ubuntu-noble-aarch64-pd-v4.18.0.tar.xz';
@@ -10,13 +8,8 @@ class Config {
   static const String githubReleasesPath =
       '/repos/$githubOwner/$githubRepo/releases/latest';
 
-  // GitHub API 镜像源列表（按优先级排序）
-  static const List<String> githubApiMirrors = [
-    'https://ghfast.top',
-    'https://gh-proxy.com',
-    'https://mirror.ghproxy.com',
-    'https://hub.gitmirror.com',
-  ];
+  // 实测可用于 GitHub Release API 的固定回退源。
+  static const String githubApiFallback = 'https://gh-proxy.com';
 
   // GitHub 官方 API
   static const String githubApi = 'https://api.github.com';

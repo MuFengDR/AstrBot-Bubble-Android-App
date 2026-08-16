@@ -4,20 +4,24 @@ class ServicePorts {
   static const int defaultDashboardPort = 6185;
   static const int defaultOneBotWsPort = 6199;
   static const int defaultNapCatWebUiPort = 6099;
+  static const int defaultOpenCodePort = 4096;
 
   static SettingNode get _dashboardPort => 'astrbot_dashboard_port'.setting;
   static SettingNode get _oneBotWsPort => 'astrbot_onebot_ws_port'.setting;
   static SettingNode get _napCatWebUiPort => 'napcat_webui_port'.setting;
+  static SettingNode get _openCodePort => 'opencode_webui_port'.setting;
 
   static int get dashboardPort =>
       _readPort(_dashboardPort, defaultDashboardPort);
   static int get oneBotWsPort => _readPort(_oneBotWsPort, defaultOneBotWsPort);
   static int get napCatWebUiPort =>
       _readPort(_napCatWebUiPort, defaultNapCatWebUiPort);
+  static int get openCodePort => _readPort(_openCodePort, defaultOpenCodePort);
 
   static String get dashboardUrl => 'http://127.0.0.1:$dashboardPort';
   static String get napCatWebUiUrl => 'http://127.0.0.1:$napCatWebUiPort/webui';
   static String get oneBotWsUrl => 'ws://localhost:$oneBotWsPort/ws';
+  static String get openCodeWebUiUrl => 'http://127.0.0.1:$openCodePort';
   static int get napCatXDisplay {
     if (dashboardPort == defaultDashboardPort &&
         oneBotWsPort == defaultOneBotWsPort &&
@@ -29,6 +33,10 @@ class ServicePorts {
 
   static void saveDashboardPort(int port) {
     _dashboardPort.set(port);
+  }
+
+  static void saveOpenCodePort(int port) {
+    _openCodePort.set(port);
   }
 
   static bool isValidPort(int port) => port >= 1024 && port <= 65535;

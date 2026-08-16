@@ -20,6 +20,8 @@ import '../../core/utils/file_utils.dart';
 import '../routes/app_routes.dart';
 import 'terminal_tab_manager.dart';
 
+enum InstallerUpdateCheckResult { failed, timedOut, updateAvailable, upToDate }
+
 class NapCatInstanceDefaults {
   static const String storageKey = 'napcat_instances';
   static const String legacyBindingMigrationKey =
@@ -89,6 +91,7 @@ enum BotBindingConfigState {
 }
 
 class HomeController extends GetxController {
+  static const String _initialEnvironmentPreparationVersion = '1';
   static const String _successfulInitialLoginJwtKey =
       'astrbot_successful_initial_login_jwt_secret';
   static const String _legacyDefaultDashboardPasswordHash =
@@ -111,6 +114,8 @@ class HomeController extends GetxController {
   final RxBool isAstrBotStarting = false.obs;
   final RxBool isAstrBotRunning = false.obs;
   final RxBool isAstrBotStopping = false.obs;
+  final RxBool isOpenCodeRunning = false.obs;
+  final RxBool isOpenCodeInstalled = false.obs;
   final RxBool initialPasswordAssistanceCompleted = false.obs;
   final RxString homeBackgroundPath = ''.obs;
   final RxDouble cardGlassOpacity = 0.62.obs;
@@ -126,6 +131,10 @@ class HomeController extends GetxController {
   final RxList<String> hiddenWebUiTargetIds = <String>[].obs;
   final RxnString pendingWebUiTargetId = RxnString();
   final RxnInt pendingMainTabIndex = RxnInt();
+  final RxString initialEnvironmentStage = '正在准备运行环境…'.obs;
+  final RxDouble initialEnvironmentProgress = 0.0.obs;
+  Future<void>? _environmentPreparation;
+  Future<void>? _initialUbuntuPreparation;
   Dialog? _qrcodeDialog;
   StreamSubscription? _qrcodeSubscription;
   StreamSubscription? _webviewSubscription; // 添加webview监听订阅
@@ -987,32 +996,251 @@ fi
     required String step,
     required String title,
     bool reinstall = false,
+    bool reinstallLinuxqq = false,
     void Function()? onCommandDone,
   }) async {
-    await _prepareEnvironmentScripts();
     final doneMarker = '__ASTRBOT_ENV_STEP_DONE__:$step';
-    final ubuntuStepCommand = StringBuffer()
-      ..write('export TMPDIR=${RuntimeEnvir.tmpPath}; ')
-      ..write('export L_NOT_INSTALLED=${S.current.uninstalled}; ')
-      ..write('export L_INSTALLING=${S.current.installing}; ')
-      ..write('export L_INSTALLED=${S.current.installed}; ')
+    await _openInstallerBootstrapTerminal(
+      title: title,
+      doneMarker: doneMarker,
+      installerCommand: '--run --step $step',
+      forceReinstallStep: reinstall ? step : '',
+      reinstallLinuxqq: reinstallLinuxqq,
+      onCommandDone: onCommandDone,
+    );
+  }
+
+  Future<void> startOpenCode({void Function()? onCommandDone}) async {
+    await _openInstallerBootstrapTerminal(
+      title: 'Start OpenCode',
+      doneMarker: '__ASTRBOT_OPENCODE_START_DONE__',
+      installerCommand: '--run --step opencode_start',
+      onCommandDone: () {
+        isOpenCodeRunning.value = true;
+        onCommandDone?.call();
+      },
+    );
+  }
+
+  Future<void> stopOpenCode({void Function()? onCommandDone}) async {
+    await _openInstallerBootstrapTerminal(
+      title: 'Stop OpenCode',
+      doneMarker: '__ASTRBOT_OPENCODE_STOP_DONE__',
+      installerCommand: '--run --step opencode_stop',
+      onCommandDone: () {
+        isOpenCodeRunning.value = false;
+        onCommandDone?.call();
+      },
+    );
+  }
+
+  Future<void> uninstallOpenCode({
+    required bool cleanData,
+    void Function()? onCommandDone,
+  }) async {
+    await _openInstallerBootstrapTerminal(
+      title: 'Uninstall OpenCode',
+      doneMarker: '__ASTRBOT_OPENCODE_UNINSTALL_DONE__',
+      installerCommand: '--run --step opencode_uninstall',
+      openCodeCleanData: cleanData,
+      onCommandDone: () {
+        isOpenCodeRunning.value = false;
+        onCommandDone?.call();
+      },
+    );
+  }
+
+  Future<void> checkInstallerUpdate({
+    void Function()? onCommandDone,
+    void Function(bool updateAvailable)? onUpdateAvailable,
+    void Function(InstallerUpdateCheckResult result)? onResult,
+    void Function(void Function() cancel)? onCancelReady,
+  }) {
+    const maxOutputBufferLength = 8192;
+    String? currentVersion;
+    String? remoteVersion;
+    var outputBuffer = '';
+    var resultNotified = false;
+    void notifyResult(InstallerUpdateCheckResult result) {
+      if (resultNotified) return;
+      resultNotified = true;
+      onResult?.call(result);
+    }
+    return _openInstallerBootstrapTerminal(
+      title: 'Check installer updates',
+      doneMarker: '__ASTRBOT_INSTALLER_CHECK_DONE__',
+      installerCommand: '--check',
+      diagnosticLabel: 'Installer check',
+      preserveTabOnCancel: true,
+      onOutput: (output) {
+        outputBuffer += output;
+        if (outputBuffer.length > maxOutputBufferLength) {
+          outputBuffer = outputBuffer.substring(
+            outputBuffer.length - maxOutputBufferLength,
+          );
+        }
+        if (outputBuffer.contains('__ASTRBOT_INSTALLER_COMMAND_FAILED__:')) {
+          notifyResult(InstallerUpdateCheckResult.failed);
+          return;
+        }
+        final current = RegExp(r'Current version:\s*([^\s]+)')
+            .firstMatch(outputBuffer);
+        final remote = RegExp(r'Verified remote version:\s*([^\s]+)')
+            .firstMatch(outputBuffer);
+        currentVersion ??= current?.group(1);
+        remoteVersion ??= remote?.group(1);
+      },
+      onCommandDone: () {
+        final current = _parseInstallerVersion(currentVersion);
+        final remote = _parseInstallerVersion(remoteVersion);
+        final available = remote != null &&
+            (current == null || _compareInstallerVersions(remote, current) > 0);
+        onUpdateAvailable?.call(available);
+        notifyResult(
+          available
+              ? InstallerUpdateCheckResult.updateAvailable
+              : InstallerUpdateCheckResult.upToDate,
+        );
+        onCommandDone?.call();
+      },
+      onCommandExit: (_) => notifyResult(InstallerUpdateCheckResult.failed),
+      onStarted: onCancelReady,
+    );
+  }
+
+  List<int>? _parseInstallerVersion(String? value) {
+    if (value == null || !RegExp(r'^\d+\.\d+\.\d+$').hasMatch(value)) {
+      return null;
+    }
+    return value.split('.').map(int.parse).toList(growable: false);
+  }
+
+  int _compareInstallerVersions(List<int> left, List<int> right) {
+    for (var i = 0; i < 3; i++) {
+      final difference = left[i] - right[i];
+      if (difference != 0) return difference;
+    }
+    return 0;
+  }
+
+  Future<void> updateInstaller({
+    void Function()? onCommandDone,
+  }) {
+    return _openInstallerBootstrapTerminal(
+      title: 'Update installer',
+      doneMarker: '__ASTRBOT_INSTALLER_UPDATE_DONE__',
+      installerCommand: '--update',
+      onCommandDone: onCommandDone,
+    );
+  }
+
+  Future<void> importInstallerPackage(
+    List<int> archiveBytes, {
+    void Function()? onCommandDone,
+  }) async {
+    const archiveName = 'astrbot-installer-offline-import.tar.gz';
+    final hostArchive = File('${RuntimeEnvir.homePath}/$archiveName');
+    await hostArchive.parent.create(recursive: true);
+    await hostArchive.writeAsBytes(archiveBytes, flush: true);
+    await _openInstallerBootstrapTerminal(
+      title: 'Import installer package',
+      doneMarker: '__ASTRBOT_INSTALLER_IMPORT_DONE__',
+      installerCommand: '--import /root/$archiveName',
+      hostPreparation:
+          'cp ${_shellSingleQuote(hostArchive.path)} "\$UBUNTU_PATH/root/$archiveName"',
+      onCommandDone: onCommandDone,
+    );
+  }
+
+  String _installerEnvironmentPrefix({
+    String forceReinstallStep = '',
+    bool openCodeCleanData = false,
+    bool reinstallLinuxqq = false,
+  }) {
+    final prefix = StringBuffer()
+      ..write('export TMPDIR=${_shellSingleQuote(RuntimeEnvir.tmpPath)}; ')
+      ..write('export L_NOT_INSTALLED=${_shellSingleQuote(S.current.uninstalled)}; ')
+      ..write('export L_INSTALLING=${_shellSingleQuote(S.current.installing)}; ')
+      ..write('export L_INSTALLED=${_shellSingleQuote(S.current.installed)}; ')
       ..write('export ASTRBOT_DASHBOARD_PORT=${ServicePorts.dashboardPort}; ')
       ..write('export ASTRBOT_ONEBOT_WS_PORT=${ServicePorts.oneBotWsPort}; ')
       ..write(
-        'export ASTRBOT_GITHUB_PROXY=${EnvironmentConfig.effectiveGithubProxy}; ',
+        'export ASTRBOT_GITHUB_PROXY=${_shellSingleQuote(EnvironmentConfig.githubProxy)}; ',
       )
-      ..write('export ASTRBOT_FORCE_REINSTALL_STEP=${reinstall ? step : ''}; ')
-      ..write('chmod +x /root/astrbot-startup.sh; ')
-      ..write('bash /root/astrbot-startup.sh --step $step && ')
-      ..write("printf '%s\\n' ${_shellSingleQuote(doneMarker)}");
+      ..write(
+        'export ASTRBOT_FORCE_REINSTALL_STEP=${_shellSingleQuote(forceReinstallStep)}; ',
+      )
+      ..write(
+        'export ASTRBOT_OPENCODE_PORT=${ServicePorts.openCodePort}; ',
+      )
+      ..write(
+        'export ASTRBOT_OPENCODE_CLEAN_DATA=${openCodeCleanData ? 1 : 0}; ',
+      )
+      ..write(
+        'export ASTRBOT_LINUXQQ_FORCE_INSTALL=${reinstallLinuxqq ? 1 : 0}; ',
+      );
+    return prefix.toString();
+  }
+
+  Future<void> _openInstallerBootstrapTerminal({
+    required String title,
+    required String doneMarker,
+    required String installerCommand,
+    bool showInTerminal = true,
+    String forceReinstallStep = '',
+    bool openCodeCleanData = false,
+    bool reinstallLinuxqq = false,
+    String? hostPreparation,
+    void Function()? onCommandDone,
+    void Function(String output)? onOutput,
+    void Function(int exitCode)? onCommandExit,
+    void Function(void Function() cancel)? onStarted,
+    String? diagnosticLabel,
+    bool preserveTabOnCancel = false,
+  }) async {
+    await prepareInitialUbuntuEnvironment();
+    final ubuntuStepCommand = StringBuffer()
+      ..write(_installerEnvironmentPrefix(
+        forceReinstallStep: forceReinstallStep,
+        openCodeCleanData: openCodeCleanData,
+        reinstallLinuxqq: reinstallLinuxqq,
+      ))
+      ..write(
+        diagnosticLabel == null
+            ? ''
+            : "printf '%s\\n' '[${diagnosticLabel}] Entered Ubuntu; starting bootstrap command.'; ",
+      )
+      ..write('chmod 700 /root/astrbot-installer-bootstrap.sh; ')
+      ..write('if bash /root/astrbot-installer-bootstrap.sh $installerCommand; then ')
+      ..write("printf '%s\\n' ${_shellSingleQuote(doneMarker)}; ")
+      ..write(
+        "else status=\$?; printf '%s:%s\\n' "
+        "'__ASTRBOT_INSTALLER_COMMAND_FAILED__' \"\$status\"; false; fi",
+      );
 
     final scriptFile = File(
-      '${RuntimeEnvir.homePath}/env_step_${step}_${DateTime.now().millisecondsSinceEpoch}.sh',
+      '${RuntimeEnvir.homePath}/installer_${DateTime.now().millisecondsSinceEpoch}.sh',
     );
     final script = StringBuffer()
       ..writeln('source ${RuntimeEnvir.homePath}/common.sh')
+      ..writeln(
+        diagnosticLabel == null
+            ? ''
+            : "printf '%s\\n' '[${diagnosticLabel}] Preparing host terminal environment.'",
+      )
       ..writeln('install_ubuntu || exit 1')
+      ..writeln(
+        diagnosticLabel == null
+            ? ''
+            : "printf '%s\\n' '[${diagnosticLabel}] Ubuntu rootfs is ready.'",
+      )
       ..writeln('copy_files || exit 1')
+      ..writeln(
+        diagnosticLabel == null
+            ? ''
+            : "printf '%s\\n' '[${diagnosticLabel}] Runtime files copied; entering Ubuntu.'",
+      )
+      ..writeln(hostPreparation ?? '')
       ..writeln(
         'login_ubuntu ${_shellSingleQuote(ubuntuStepCommand.toString())}',
       );
@@ -1024,8 +1252,13 @@ fi
     await terminalTabManager.addCommandTerminalTab(
       title: title,
       command: command.toString(),
+      showInTerminal: showInTerminal,
       onDoneMarker: doneMarker,
       onCommandDone: onCommandDone,
+      onOutput: onOutput,
+      onCommandExit: onCommandExit,
+      onStarted: onStarted,
+      preserveTabOnCancel: preserveTabOnCancel,
     );
   }
 
@@ -1044,27 +1277,166 @@ fi
         ubuntuAssetFile.path,
       );
     }
-    await AssetsUtils.copyAssetToPath('assets/astrbot-startup.sh',
-        '${RuntimeEnvir.homePath}/astrbot-startup.sh');
+    await AssetsUtils.copyAssetToPath(
+      'assets/astrbot-installer-bootstrap.sh',
+      '${RuntimeEnvir.homePath}/astrbot-installer-bootstrap.sh',
+    );
     await AssetsUtils.copyAssetToPath(
         'assets/cmd_config.json', '${RuntimeEnvir.homePath}/cmd_config.json');
 
     final appVersion = await getAppVersion();
-    final startupScriptFile =
-        File('${RuntimeEnvir.homePath}/astrbot-startup.sh');
-    if (await startupScriptFile.exists()) {
-      var scriptContent = await startupScriptFile.readAsString();
-      scriptContent = scriptContent.replaceAll('{{VERSION}}', appVersion);
-      await startupScriptFile.writeAsString(_toUnixLineEndings(scriptContent));
-    }
-
     File('${RuntimeEnvir.homePath}/common.sh').writeAsStringSync(
       _toUnixLineEndings(getCommonScript(appVersion)),
     );
   }
 
-  Future<void> prepareTerminalEnvironment() async {
-    await _prepareEnvironmentScripts();
+  Future<void> prepareTerminalEnvironment() {
+    final existing = _environmentPreparation;
+    if (existing != null) return existing;
+
+    final preparation = _prepareEnvironmentScripts();
+    _environmentPreparation = preparation;
+    preparation.catchError((_) {
+      if (identical(_environmentPreparation, preparation)) {
+        _environmentPreparation = null;
+      }
+    });
+    return preparation;
+  }
+
+  Future<void> prepareInitialUbuntuEnvironment() {
+    final existing = _initialUbuntuPreparation;
+    if (existing != null) return existing;
+
+    final preparation = _initializeUbuntuEnvironment();
+    _initialUbuntuPreparation = preparation;
+    preparation.catchError((error, stackTrace) {
+      if (identical(_initialUbuntuPreparation, preparation)) {
+        _initialUbuntuPreparation = null;
+      }
+      Log.e('Initial Ubuntu preparation failed: $error', tag: 'Environment');
+    });
+    return preparation;
+  }
+
+  Future<void> _initializeUbuntuEnvironment() async {
+    final root = Directory(ubuntuPath);
+    final bootstrapReadyMarker = File(
+      '${root.path}/root/.astrbot-android/installer/bootstrap-ready',
+    );
+    var reportedProgress = 0.0;
+    void report(String stage, double progress) {
+      if (progress > 0 && progress < reportedProgress) return;
+      if (progress > 0) reportedProgress = progress;
+      initialEnvironmentStage.value = stage;
+      initialEnvironmentProgress.value = progress.clamp(0.0, 1.0).toDouble();
+    }
+
+    report('正在准备终端环境…', 0.05);
+    await prepareTerminalEnvironment();
+    final rootfsReady =
+        await Directory('${root.path}/bin').exists() &&
+        await File('${root.path}/usr/bin/env').exists() &&
+        await Directory('${root.path}/etc').exists();
+    final markerVersion = await bootstrapReadyMarker.exists()
+        ? (await bootstrapReadyMarker.readAsString()).trim()
+        : null;
+    if (rootfsReady &&
+        markerVersion == _initialEnvironmentPreparationVersion) {
+      report('运行环境准备完成', 1.0);
+      return;
+    }
+
+    report('正在安装 Ubuntu 运行环境…', 0.20);
+    final completion = Completer<void>();
+    var installingBootstrapRequirements = false;
+    var bootstrapOutputBuffer = '';
+    String? activeBootstrapPackage;
+    final prepareCommand =
+        "bash /root/astrbot-installer-bootstrap.sh --prepare; status=\$?; "
+        "marker='__ASTRBOT_UBUNT'; marker=\"\${marker}U_READY__\"; "
+        "[ \$status -eq 0 ] && printf '%s\\n' \"\$marker\"; exit \$status";
+    await terminalTabManager.addCommandTerminalTab(
+      title: 'Prepare Ubuntu environment',
+      command:
+          'source ${RuntimeEnvir.homePath}/common.sh\n'
+          'install_ubuntu || exit 1\n'
+          'copy_files || exit 1\n'
+          'login_ubuntu ${_shellSingleQuote(prepareCommand)}\n',
+      showInTerminal: true,
+      onDoneMarker: '__ASTRBOT_UBUNTU_READY__',
+      onOutput: (output) {
+        bootstrapOutputBuffer += output;
+        if (bootstrapOutputBuffer.length > 2048) {
+          bootstrapOutputBuffer = bootstrapOutputBuffer.substring(
+            bootstrapOutputBuffer.length - 2048,
+          );
+        }
+        final requirements = RegExp(
+          r'Installing bootstrap requirements:\s*([^\r\n]+)',
+        ).firstMatch(bootstrapOutputBuffer);
+        if (output.contains('Installing bootstrap requirements')) {
+          installingBootstrapRequirements = true;
+          final packageNames = requirements?.group(1)?.trim();
+          report(
+            packageNames == null || packageNames.isEmpty
+                ? '正在安装 bootstrap 依赖…'
+                : '正在安装 ${packageNames.replaceAll(' ', '、')}…',
+            0.62,
+          );
+        } else if (output.contains('Bootstrap requirements are ready')) {
+          installingBootstrapRequirements = false;
+          report('正在完成运行环境准备…', 0.90);
+        } else if (output.contains('installer bootstrap refreshed')) {
+          report('正在刷新安装脚本组件…', 0.48);
+        } else if (output.contains('Ubuntu 已安装') ||
+            output.contains('Ubuntu installed')) {
+          report('正在准备安装脚本组件…', 0.40);
+        }
+
+        if (installingBootstrapRequirements) {
+          final packageMatch = RegExp(
+            r'(?:Unpacking|Setting up|Preparing to unpack)\s+([A-Za-z0-9.+:-]+)',
+          ).firstMatch(output);
+          final packageName = packageMatch?.group(1);
+          if (packageName != null) {
+            activeBootstrapPackage = packageName;
+            report('正在安装 $packageName…', reportedProgress);
+          }
+          final percentages = RegExp(r'(?<!\d)(\d{1,3})%')
+              .allMatches(output)
+              .map((match) => int.tryParse(match.group(1) ?? ''))
+              .whereType<int>();
+          if (percentages.isNotEmpty) {
+            final percentage = percentages.last.clamp(0, 100).toDouble();
+            report(
+              activeBootstrapPackage == null
+                  ? '正在安装 bootstrap 依赖…'
+                  : '正在安装 $activeBootstrapPackage…',
+              0.62 + percentage * 0.0026,
+            );
+          }
+        }
+      },
+      onCommandDone: () {
+        report('运行环境准备完成', 1.0);
+        if (!completion.isCompleted) completion.complete();
+      },
+      onCommandExit: (exitCode) {
+        if (!completion.isCompleted) {
+          report('运行环境准备失败', 0.0);
+          completion.completeError(
+            StateError('Ubuntu initialization failed with exit code $exitCode.'),
+          );
+        }
+      },
+    );
+    await completion.future;
+    await bootstrapReadyMarker.parent.create(recursive: true);
+    await bootstrapReadyMarker.writeAsString(
+      '$_initialEnvironmentPreparationVersion\n',
+      flush: true,
+    );
   }
 
   @override
@@ -2392,6 +2764,14 @@ fi
 
   void requestOpenAstrBotWebUi() {
     const targetId = 'astrbot';
+    showWebUiTarget(targetId);
+    pendingWebUiTargetId.value = targetId;
+  }
+
+  Future<bool> isPortAvailable(int port) => _isPortAvailable(port);
+
+  void requestOpenOpenCodeWebUi() {
+    const targetId = 'opencode';
     showWebUiTarget(targetId);
     pendingWebUiTargetId.value = targetId;
   }

@@ -52,6 +52,12 @@ class _MainPageState extends State<MainPage> {
     Navigator.of(context).maybePop();
   }
 
+  void _handlePopInvoked(bool didPop, Object? result) {
+    // The embedded WebView handles its own history first. It calls
+    // onBackToHome only when the current page has no browser history.
+    if (didPop || _currentIndex != 1) return;
+  }
+
   Route<void> _buildSettingsRoute() {
     return PageRouteBuilder<void>(
       transitionDuration: const Duration(milliseconds: 220),
@@ -88,14 +94,22 @@ class _MainPageState extends State<MainPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Obx(
-      () => BubbleBackground(
-        imagePath: homeController.homeBackgroundPath.value,
-        child: Scaffold(
-          backgroundColor: Colors.transparent,
-          extendBody: true,
-          body: _buildMainTabs(),
-          bottomNavigationBar: _buildBottomNav(context),
+    return _buildMainShell(context);
+  }
+
+  Widget _buildMainShell(BuildContext context) {
+    return PopScope<Object?>(
+      canPop: _currentIndex != 1,
+      onPopInvokedWithResult: _handlePopInvoked,
+      child: Obx(
+        () => BubbleBackground(
+          imagePath: homeController.homeBackgroundPath.value,
+          child: Scaffold(
+            backgroundColor: Colors.transparent,
+            extendBody: true,
+            body: _buildMainTabs(),
+            bottomNavigationBar: _buildBottomNav(context),
+          ),
         ),
       ),
     );
@@ -151,6 +165,7 @@ class _MainPageState extends State<MainPage> {
           WebViewPage(
             embedded: true,
             bottomContentInset: webViewBottomInset,
+            onBackToHome: () => _openTab(0),
           ),
           TerminalTabView(
             bottomContentInset:

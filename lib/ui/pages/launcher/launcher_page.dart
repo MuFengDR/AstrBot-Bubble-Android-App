@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:get/get.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/config/environment_config.dart';
 import '../../../core/config/service_ports.dart';
@@ -23,6 +26,10 @@ class LauncherPage extends StatefulWidget {
 
 class _LauncherPageState extends State<LauncherPage>
     with WidgetsBindingObserver {
+  static final Uri _installerRepositoryUri =
+      Uri.parse(
+        'https://github.com/MuFengDR/AstrBot-Android-Scripts/releases/latest',
+      );
   final HomeController homeController = Get.find<HomeController>();
   final Map<String, _EnvStepState> _environmentStates = {};
   final Map<String, _NapCatAccountOperation> _napCatBusyOperations = {};
@@ -33,6 +40,11 @@ class _LauncherPageState extends State<LauncherPage>
   Worker? _napCatInstancesWorker;
   bool _checkingEnvironment = false;
   bool _initialEnvironmentCheckComplete = false;
+  Object? _initialEnvironmentError;
+  bool _environmentExpanded = false;
+  _InstallerScriptState _installerScriptState =
+      _InstallerScriptState.notDownloaded;
+  String? _installerScriptVersion;
 
   Future<void> _showGithubProxyDialog() async {
     await showDialog<void>(
@@ -40,6 +52,18 @@ class _LauncherPageState extends State<LauncherPage>
       builder: (_) => const _GithubProxyDialog(),
     );
     if (mounted) setState(() {});
+  }
+
+  Future<void> _openInstallerRepository() async {
+    try {
+      final opened = await launchUrl(
+        _installerRepositoryUri,
+        mode: LaunchMode.externalApplication,
+      );
+      if (!opened && mounted) _showSnack('无法打开脚本仓库');
+    } catch (_) {
+      if (mounted) _showSnack('无法打开脚本仓库');
+    }
   }
 
   @override
@@ -155,32 +179,45 @@ class _LauncherPageState extends State<LauncherPage>
 
   Future<void> _runStep(_EnvStep step, _EnvStepState currentState) async {
     if (!currentState.enabled) {
-      _showSnack('请先完成上方依赖项');
+      _showSnack(
+        _installerScriptState == _InstallerScriptState.valid
+            ? '请先安装上方依赖项'
+            : '请先下载或更新脚本',
+      );
       return;
     }
 
     final reinstall = currentState.installed;
+    var reinstallLinuxqq = false;
     if (reinstall) {
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: Text('重装 ${step.title}'),
-          content: Text(
-            step.reinstallMessage,
+      final bool? confirmed;
+      if (step.id == 'napcat') {
+        confirmed = await _showNapCatReinstallDialog();
+        reinstallLinuxqq = confirmed == true;
+      } else {
+        confirmed = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text('重装 ${step.title}'),
+            content: Text(step.reinstallMessage),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('确认重装'),
+              ),
+            ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('确认重装'),
-            ),
-          ],
-        ),
-      );
-      if (confirmed != true) return;
+        );
+      }
+      if (step.id == 'napcat') {
+        if (confirmed == null) return;
+      } else if (confirmed != true) {
+        return;
+      }
     }
 
     try {
@@ -188,6 +225,7 @@ class _LauncherPageState extends State<LauncherPage>
         step: step.id,
         title: step.title,
         reinstall: reinstall,
+        reinstallLinuxqq: reinstallLinuxqq,
         onCommandDone: () {
           if (mounted) {
             _refreshEnvironmentStatus();
@@ -199,6 +237,219 @@ class _LauncherPageState extends State<LauncherPage>
     } catch (e) {
       _showSnack('启动失败：$e');
     }
+  }
+
+  Future<bool?> _showNapCatReinstallDialog() {
+    var reinstallLinuxqq = false;
+    return showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('重装 NapCat'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('将清理 NapCat 安装文件并重新安装，尽量保留配置目录。'),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                value: reinstallLinuxqq,
+                onChanged: (value) => setDialogState(
+                  () => reinstallLinuxqq = value == true,
+                ),
+                title: const Text('同时重装 QQ'),
+                subtitle: const Text('未安装 QQ 时，即使不勾选也会自动安装'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(null),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(reinstallLinuxqq),
+              child: const Text('确认重装'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _checkThenOfferInstallerUpdate() async {
+    final isFirstDownload =
+        _installerScriptState == _InstallerScriptState.notDownloaded;
+    InstallerUpdateCheckResult? result;
+    StateSetter? updateDialog;
+    VoidCallback? cancelCheck;
+    Timer? checkTimeout;
+    var dialogOpen = true;
+    var started = false;
+    var checkGeneration = 0;
+
+    Future<void> runCheck() async {
+      final generation = ++checkGeneration;
+      checkTimeout?.cancel();
+      checkTimeout = Timer(const Duration(seconds: 60), () {
+        if (!mounted || !dialogOpen || generation != checkGeneration) return;
+        checkGeneration++;
+        cancelCheck?.call();
+        updateDialog?.call(
+          () => result = InstallerUpdateCheckResult.timedOut,
+        );
+      });
+      try {
+        await homeController.checkInstallerUpdate(
+          onCancelReady: (cancel) {
+            if (generation != checkGeneration) {
+              cancel();
+            } else {
+              cancelCheck = cancel;
+            }
+          },
+          onResult: (value) {
+            if (generation != checkGeneration ||
+                !mounted ||
+                !dialogOpen ||
+                updateDialog == null) {
+              return;
+            }
+            checkTimeout?.cancel();
+            updateDialog!(() => result = value);
+          },
+        );
+      } catch (_) {
+        if (generation != checkGeneration ||
+            !mounted ||
+            !dialogOpen ||
+            updateDialog == null) {
+          return;
+        }
+        checkTimeout?.cancel();
+        updateDialog!(() => result = InstallerUpdateCheckResult.failed);
+      }
+    }
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          updateDialog = setDialogState;
+          if (!started) {
+            started = true;
+            WidgetsBinding.instance.addPostFrameCallback((_) => runCheck());
+          }
+
+          final checking = result == null;
+          final icon = switch (result) {
+            InstallerUpdateCheckResult.failed => Icons.error_outline,
+            InstallerUpdateCheckResult.timedOut => Icons.timer_off_outlined,
+            InstallerUpdateCheckResult.updateAvailable =>
+              Icons.system_update_alt,
+            InstallerUpdateCheckResult.upToDate => Icons.check_circle_outline,
+            null => null,
+          };
+          final message = switch (result) {
+            InstallerUpdateCheckResult.failed =>
+              '检查失败。关闭此提示后可到终端查看检查日志，或前往脚本仓库下载离线包后手动导入。',
+            InstallerUpdateCheckResult.timedOut =>
+              '检查超过 60 秒，已停止。关闭此提示后可到终端查看检查日志，或前往脚本仓库下载离线包后手动导入。',
+            InstallerUpdateCheckResult.updateAvailable =>
+              isFirstDownload
+                  ? '已找到可用安装脚本，是否立即下载？'
+                  : '发现新版安装脚本，是否立即更新？',
+            InstallerUpdateCheckResult.upToDate => '当前已是最新安装脚本。',
+            null => '正在检查安装脚本更新，请稍候…',
+          };
+
+          return AlertDialog(
+            title: const Text('安装脚本更新'),
+            content: Row(
+              children: [
+                if (checking)
+                  const SizedBox.square(
+                    dimension: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2.5),
+                  )
+                else
+                  Icon(icon),
+                const SizedBox(width: 16),
+                Expanded(child: Text(message)),
+              ],
+            ),
+            actions: [
+              if (checking)
+                TextButton(
+                  onPressed: () {
+                    checkGeneration++;
+                    checkTimeout?.cancel();
+                    dialogOpen = false;
+                    cancelCheck?.call();
+                    Navigator.of(dialogContext).pop();
+                  },
+                  child: const Text('取消'),
+                ),
+              if (!checking)
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('关闭'),
+                ),
+              if (result == InstallerUpdateCheckResult.failed ||
+                  result == InstallerUpdateCheckResult.timedOut)
+                TextButton.icon(
+                  onPressed: _openInstallerRepository,
+                  icon: const Icon(Icons.open_in_new),
+                  label: const Text('打开脚本仓库'),
+                ),
+              if (result == InstallerUpdateCheckResult.failed ||
+                  result == InstallerUpdateCheckResult.timedOut)
+                FilledButton.tonal(
+                  onPressed: () {
+                    cancelCheck = null;
+                    setDialogState(() => result = null);
+                    runCheck();
+                  },
+                  child: const Text('重试'),
+                ),
+              if (result == InstallerUpdateCheckResult.updateAvailable)
+                FilledButton(
+                  onPressed: () async {
+                    Navigator.of(dialogContext).pop();
+                    await homeController.updateInstaller(
+                      onCommandDone: _refreshEnvironmentStatus,
+                    );
+                    _showSnack('正在终端更新安装脚本');
+                    widget.onNavigate?.call(2);
+                  },
+                  child: Text(isFirstDownload ? '立即下载' : '立即更新'),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+    checkGeneration++;
+    checkTimeout?.cancel();
+    dialogOpen = false;
+  }
+
+  Future<void> _importInstallerPackage() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['gz', 'tgz'],
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) return;
+    final bytes = result.files.first.bytes;
+    if (bytes == null || bytes.isEmpty) return;
+
+    await homeController.importInstallerPackage(
+      bytes,
+      onCommandDone: _refreshEnvironmentStatus,
+    );
+    _showSnack('正在终端导入离线安装脚本包');
+    if (mounted) widget.onNavigate?.call(2);
   }
 
   void _openSettings() {
@@ -270,6 +521,165 @@ class _LauncherPageState extends State<LauncherPage>
     _showSnack('AstrBot 端口已保存，重启 AstrBot 后生效');
   }
 
+  Future<void> _showOpenCodePortDialog() async {
+    final controller =
+        TextEditingController(text: ServicePorts.openCodePort.toString());
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('OpenCode 监听端口'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            labelText: 'WebUI 端口',
+            hintText: '范围 1024-65535，默认 4096',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    final portText = controller.text.trim();
+    await Future<void>.delayed(kThemeAnimationDuration);
+    controller.dispose();
+    if (!mounted || result != true) return;
+
+    final port = int.tryParse(portText);
+    if (port == null || !ServicePorts.isValidPort(port)) {
+      _showSnack('端口无效：请输入 1024-65535');
+      return;
+    }
+    if (port == ServicePorts.dashboardPort ||
+        port == ServicePorts.oneBotWsPort ||
+        port == ServicePorts.napCatWebUiPort ||
+        homeController.napCatInstances.any(
+          (instance) => int.tryParse(instance['webUiPort']?.toString() ?? '') == port,
+        )) {
+      _showSnack('端口 $port 已被其他服务配置使用');
+      return;
+    }
+    if (!await homeController.isPortAvailable(port)) {
+      _showSnack('端口 $port 当前已被系统占用');
+      return;
+    }
+    ServicePorts.saveOpenCodePort(port);
+    if (mounted) setState(() {});
+    _showSnack('OpenCode 端口已保存，重启服务后生效');
+  }
+
+  Future<void> _startOpenCode() async {
+    if (!await _ensureOpenCodeRuntimeSupported()) return;
+    if (homeController.isOpenCodeRunning.value) {
+      await homeController.stopOpenCode();
+      _showSnack('正在终端停止 OpenCode');
+    } else {
+      await homeController.startOpenCode(
+        onCommandDone: () {
+          if (!mounted) return;
+          homeController.requestOpenOpenCodeWebUi();
+          widget.onNavigate?.call(1);
+        },
+      );
+      _showSnack('正在终端启动 OpenCode Web 服务');
+    }
+    if (mounted) {
+      if (homeController.isOpenCodeRunning.value) {
+        widget.onNavigate?.call(1);
+      }
+      _refreshEnvironmentStatus();
+    }
+  }
+
+  Future<void> _showOpenCodeUninstallDialog() async {
+    if (!await _ensureOpenCodeRuntimeSupported()) return;
+    var cleanData = false;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('卸载 OpenCode'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('项目目录始终保留。请选择是否同时清理 OpenCode 配置和缓存。'),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                value: cleanData,
+                onChanged: (value) =>
+                    setDialogState(() => cleanData = value == true),
+                title: const Text('同时清理配置和缓存'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('确认卸载'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true) return;
+    await homeController.uninstallOpenCode(
+      cleanData: cleanData,
+      onCommandDone: () {
+        homeController.isOpenCodeInstalled.value = false;
+        _refreshEnvironmentStatus();
+      },
+    );
+    _showSnack('正在终端卸载 OpenCode');
+    if (mounted) widget.onNavigate?.call(2);
+  }
+
+  Future<bool> _ensureOpenCodeRuntimeSupported() async {
+    final runtimeScript = File(
+      '${scripts.ubuntuPath}/root/.astrbot-android/installer/current/astrbot-startup.sh',
+    );
+    try {
+      if (await runtimeScript.exists()) {
+        final source = await runtimeScript.readAsString();
+        if (source.contains('opencode_start)') &&
+            source.contains('opencode_stop)') &&
+            source.contains('opencode_uninstall)')) {
+          return true;
+        }
+      }
+    } catch (_) {
+      // Treat unreadable runtime scripts as unsupported and guide the user.
+    }
+    if (!mounted) return false;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('需要更新脚本'),
+        content: const Text('当前安装脚本版本不支持 OpenCode 服务管理，请先在环境管理中更新脚本。'),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
+    return false;
+  }
+
   void _showSnack(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -288,36 +698,59 @@ class _LauncherPageState extends State<LauncherPage>
   Future<void> _refreshEnvironmentStatus() async {
     if (_checkingEnvironment) return;
     _checkingEnvironment = true;
+    if (mounted && _initialEnvironmentError != null) {
+      setState(() => _initialEnvironmentError = null);
+    }
 
     try {
-      final baseCommandReady = await _hasBaseCommands();
-      final uvReady = baseCommandReady && await _hasUv();
-      final napCatReady = baseCommandReady && await _hasNapCat();
-      final astrBotReady = uvReady && await _hasAstrBot();
+      // The existing startup transition remains visible until Ubuntu is ready.
+      // This prevents the first script operation from racing rootfs setup.
+      await homeController.prepareInitialUbuntuEnvironment();
+      final installerState = await _readInstallerScriptState();
+      final scriptReady = installerState.state == _InstallerScriptState.valid;
+      final baseCommandReady = scriptReady && await _hasBaseCommands();
+      final uvReady = scriptReady && baseCommandReady && await _hasUv();
+      final napCatReady = scriptReady && baseCommandReady && await _hasNapCat();
+      final astrBotReady = scriptReady && uvReady && await _hasAstrBot();
+      final openCodeReady = scriptReady && baseCommandReady && await _hasOpenCode();
 
       if (!mounted) return;
       setState(() {
+        _initialEnvironmentError = null;
+        _installerScriptState = installerState.state;
+        _installerScriptVersion = installerState.version;
         _environmentStates['base'] = _EnvStepState(
           installed: baseCommandReady,
-          enabled: true,
+          enabled: scriptReady,
         );
         _environmentStates['uv'] = _EnvStepState(
           installed: uvReady,
-          enabled: baseCommandReady,
+          enabled: scriptReady && baseCommandReady,
         );
         _environmentStates['napcat'] = _EnvStepState(
           installed: napCatReady,
-          enabled: baseCommandReady,
+          enabled: scriptReady && baseCommandReady,
         );
         _environmentStates['astrbot'] = _EnvStepState(
           installed: astrBotReady,
-          enabled: uvReady,
+          enabled: scriptReady && uvReady,
         );
+        _environmentStates['opencode'] = _EnvStepState(
+          installed: openCodeReady,
+          enabled: scriptReady && baseCommandReady,
+        );
+        homeController.isOpenCodeInstalled.value = openCodeReady;
         _initialEnvironmentCheckComplete = true;
       });
+    } catch (error) {
+      if (mounted) {
+        setState(() => _initialEnvironmentError = error);
+      }
     } finally {
       _checkingEnvironment = false;
-      if (mounted && !_initialEnvironmentCheckComplete) {
+      if (mounted &&
+          !_initialEnvironmentCheckComplete &&
+          _initialEnvironmentError == null) {
         setState(() => _initialEnvironmentCheckComplete = true);
       }
     }
@@ -338,6 +771,36 @@ class _LauncherPageState extends State<LauncherPage>
       if (!await file.exists()) return false;
     }
     return true;
+  }
+
+  Future<_InstallerScriptInfo> _readInstallerScriptState() async {
+    final root = '${scripts.ubuntuPath}/root';
+    final stateDir = '$root/.astrbot-android/installer';
+    final versionFile = File('$stateDir/version');
+    final runtimeScript = File('$stateDir/current/astrbot-startup.sh');
+    final legacyScript = File('$root/astrbot-startup.sh');
+
+    if (await versionFile.exists() && await runtimeScript.exists()) {
+      final version = (await versionFile.readAsString()).trim();
+      if (RegExp(r'^\d+\.\d+\.\d+$').hasMatch(version)) {
+        final mode = (await runtimeScript.stat()).mode;
+        if ((mode & 0x49) != 0) {
+          return _InstallerScriptInfo(
+            state: _InstallerScriptState.valid,
+            version: version,
+          );
+        }
+      }
+    }
+
+    if (await legacyScript.exists()) {
+      return const _InstallerScriptInfo(
+        state: _InstallerScriptState.unknownVersion,
+      );
+    }
+    return const _InstallerScriptInfo(
+      state: _InstallerScriptState.notDownloaded,
+    );
   }
 
   Future<bool> _hasUv() async {
@@ -422,6 +885,10 @@ class _LauncherPageState extends State<LauncherPage>
     return false;
   }
 
+  Future<bool> _hasOpenCode() {
+    return File('${scripts.ubuntuPath}/root/.local/bin/opencode').exists();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Obx(() {
@@ -456,15 +923,148 @@ class _LauncherPageState extends State<LauncherPage>
                         const SizedBox(height: 12),
                         _buildNapCatAccountsCard(context),
                         const SizedBox(height: 12),
+                        Obx(() => homeController.isOpenCodeInstalled.value
+                            ? Column(
+                                children: [
+                                  _buildOpenCodeCard(context),
+                                  const SizedBox(height: 12),
+                                ],
+                              )
+                            : const SizedBox.shrink()),
                         _buildEnvironmentCard(context),
                       ],
                     )
-                  : const _EnvironmentLoadingView(),
+                  : _EnvironmentLoadingView(
+                      error: _initialEnvironmentError,
+                      onRetry: _initialEnvironmentError == null
+                          ? null
+                          : _refreshEnvironmentStatus,
+                      stage: homeController.initialEnvironmentStage.value,
+                      progress: homeController.initialEnvironmentProgress.value,
+                    ),
             ),
           ],
         ),
       );
     });
+  }
+
+  Color _homeButtonForeground(
+    BuildContext context,
+    _HomeButtonTone tone,
+  ) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return switch (tone) {
+      _HomeButtonTone.primary => colorScheme.onPrimary,
+      _HomeButtonTone.secondary => colorScheme.onSurface,
+      _HomeButtonTone.success => Colors.white,
+      _HomeButtonTone.destructive => colorScheme.onError,
+    };
+  }
+
+  ButtonStyle _homeButtonStyle(
+    BuildContext context,
+    _HomeButtonTone tone,
+  ) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final secondaryBackground = Color.lerp(
+      colorScheme.surface,
+      colorScheme.onSurface,
+      theme.brightness == Brightness.dark ? 0.14 : 0.08,
+    )!;
+    final background = switch (tone) {
+      _HomeButtonTone.primary => colorScheme.primary,
+      _HomeButtonTone.secondary => secondaryBackground,
+      _HomeButtonTone.success => theme.brightness == Brightness.dark
+          ? Colors.green.shade500
+          : Colors.green.shade400,
+      _HomeButtonTone.destructive => colorScheme.error,
+    };
+    final foreground = _homeButtonForeground(context, tone);
+    final shadow = switch (tone) {
+      _HomeButtonTone.primary => colorScheme.primary.withValues(alpha: 0.30),
+      _HomeButtonTone.secondary =>
+        colorScheme.shadow.withValues(alpha: 0.13),
+      _HomeButtonTone.success => Colors.green.withValues(alpha: 0.20),
+      _HomeButtonTone.destructive => colorScheme.error.withValues(alpha: 0.28),
+    };
+    final edgeColor = switch (tone) {
+      _HomeButtonTone.primary => foreground.withValues(alpha: 0.16),
+      _HomeButtonTone.secondary => theme.brightness == Brightness.dark
+          ? colorScheme.onSurface.withValues(alpha: 0.10)
+          : colorScheme.surface.withValues(alpha: 0.78),
+      _HomeButtonTone.success => Colors.white.withValues(
+          alpha: theme.brightness == Brightness.dark ? 0.34 : 0.72,
+        ),
+      _HomeButtonTone.destructive => foreground.withValues(alpha: 0.16),
+    };
+
+    return ButtonStyle(
+      animationDuration: const Duration(milliseconds: 140),
+      shape: const WidgetStatePropertyAll(StadiumBorder()),
+      textStyle: const WidgetStatePropertyAll(
+        TextStyle(fontWeight: FontWeight.w600),
+      ),
+      backgroundColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.disabled)) {
+          return Color.lerp(
+            colorScheme.surface,
+            colorScheme.onSurface,
+            theme.brightness == Brightness.dark ? 0.10 : 0.06,
+          );
+        }
+        return background;
+      }),
+      foregroundColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.disabled)) {
+          return colorScheme.onSurface.withValues(alpha: 0.38);
+        }
+        return foreground;
+      }),
+      overlayColor: WidgetStatePropertyAll(
+        foreground.withValues(alpha: 0.10),
+      ),
+      elevation: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.disabled)) return 0;
+        if (states.contains(WidgetState.pressed)) return 1;
+        if (states.contains(WidgetState.hovered) ||
+            states.contains(WidgetState.focused)) {
+          return 4;
+        }
+        return 3;
+      }),
+      shadowColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.disabled)) {
+          return Colors.transparent;
+        }
+        return shadow;
+      }),
+      surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+      side: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.disabled)) {
+          return BorderSide(
+            color: colorScheme.onSurface.withValues(alpha: 0.04),
+          );
+        }
+        return BorderSide(color: edgeColor);
+      }),
+    );
+  }
+
+  Widget _homeButton({
+    required BuildContext context,
+    required VoidCallback? onPressed,
+    required Widget icon,
+    required Widget label,
+    _HomeButtonTone tone = _HomeButtonTone.secondary,
+  }) {
+    return FilledButton.icon(
+      style: _homeButtonStyle(context, tone),
+      onPressed: onPressed,
+      icon: icon,
+      label: label,
+    );
   }
 
   Widget _buildQuickStartCard(BuildContext context) {
@@ -540,17 +1140,25 @@ class _LauncherPageState extends State<LauncherPage>
                     final stopping = homeController.isAstrBotStopping.value;
                     final busy = starting || stopping;
 
-                    return FilledButton.icon(
+                    final tone = running || stopping
+                        ? _HomeButtonTone.destructive
+                        : _HomeButtonTone.primary;
+                    return _homeButton(
+                      context: context,
+                      tone: tone,
                       onPressed: busy
                           ? null
                           : running
                               ? _stopAstrBot
                               : _startAstrBot,
                       icon: busy
-                          ? const SizedBox(
+                          ? SizedBox(
                               width: 16,
                               height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: _homeButtonForeground(context, tone),
+                              ),
                             )
                           : Icon(running ? Icons.stop : Icons.play_arrow),
                       label: Text(
@@ -568,7 +1176,8 @@ class _LauncherPageState extends State<LauncherPage>
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: FilledButton.tonalIcon(
+                child: _homeButton(
+                  context: context,
                   onPressed: () {
                     homeController.requestOpenAstrBotWebUi();
                     widget.onNavigate?.call(1);
@@ -626,7 +1235,8 @@ class _LauncherPageState extends State<LauncherPage>
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
                   const SizedBox(height: 12),
-                  OutlinedButton.icon(
+                  _homeButton(
+                    context: context,
                     onPressed: _showAddNapCatAccountDialog,
                     icon: const Icon(Icons.person_add_alt_1),
                     label: const Text('添加账号'),
@@ -936,6 +1546,48 @@ class _LauncherPageState extends State<LauncherPage>
     return Tooltip(
       message: refreshing ? '正在刷新状态' : '点击刷新状态',
       child: chip,
+    );
+  }
+
+  Widget _buildInstallerScriptStatusChip() {
+    final color = switch (_installerScriptState) {
+      _InstallerScriptState.valid => Colors.green,
+      _InstallerScriptState.unknownVersion => Colors.amber.shade800,
+      _InstallerScriptState.notDownloaded => Colors.red,
+    };
+    final label = switch (_installerScriptState) {
+      _InstallerScriptState.valid => 'v${_installerScriptVersion ?? '?'}',
+      _InstallerScriptState.unknownVersion => '未知版本',
+      _InstallerScriptState.notDownloaded => '脚本未下载',
+    };
+    final borderRadius = BorderRadius.circular(999);
+    return Material(
+      color: Colors.transparent,
+      child: Ink(
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.10),
+          borderRadius: borderRadius,
+          border: Border.all(color: color.withValues(alpha: 0.22)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.circle, size: 7, color: color),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: TextStyle(
+                  color: color,
+                  fontSize: 9,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -1685,6 +2337,118 @@ class _LauncherPageState extends State<LauncherPage>
     }
   }
 
+  Widget _buildOpenCodeCard(BuildContext context) {
+    return GlassPanel(
+      padding: const EdgeInsets.all(16),
+      opacity: homeController.cardGlassOpacity.value,
+      blur: homeController.glassBlurAmount.value * 30,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.smart_toy_outlined),
+              const SizedBox(width: 8),
+              Text('OpenCode', style: Theme.of(context).textTheme.titleMedium),
+              const Spacer(),
+              PopupMenuButton<String>(
+                tooltip: 'OpenCode 更多',
+                onSelected: (value) {
+                  if (value == 'port') _showOpenCodePortDialog();
+                  if (value == 'uninstall') _showOpenCodeUninstallDialog();
+                },
+                itemBuilder: (context) => const [
+                  PopupMenuItem(
+                    value: 'port',
+                    child: ListTile(
+                      leading: Icon(Icons.settings_ethernet),
+                      title: Text('修改监听端口'),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'uninstall',
+                    child: ListTile(
+                      leading: Icon(Icons.delete_outline),
+                      title: Text('卸载'),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: Obx(() => _homeButton(
+                      context: context,
+                      tone: homeController.isOpenCodeRunning.value
+                          ? _HomeButtonTone.destructive
+                          : _HomeButtonTone.primary,
+                      onPressed: _startOpenCode,
+                      icon: Icon(homeController.isOpenCodeRunning.value
+                          ? Icons.stop
+                          : Icons.play_arrow),
+                      label: Text(homeController.isOpenCodeRunning.value
+                          ? '停止'
+                          : '启动'),
+                    )),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _homeButton(
+                  context: context,
+                  onPressed: _openOpenCodeWebUi,
+                  icon: const Icon(Icons.language),
+                  label: const Text('打开 WebUI'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openOpenCodeWebUi() async {
+    if (!homeController.isOpenCodeRunning.value) {
+      _showSnack('请先启动 OpenCode');
+      return;
+    }
+    _showSnack('正在等待 OpenCode WebUI 就绪');
+    final uri = Uri.parse(ServicePorts.openCodeWebUiUrl);
+    var ready = false;
+    for (var attempt = 0; attempt < 15 && mounted; attempt++) {
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 2);
+      try {
+        final request = await client.getUrl(uri).timeout(
+              const Duration(seconds: 2),
+            );
+        final response = await request.close().timeout(
+              const Duration(seconds: 2),
+            );
+        await response.drain<void>();
+        ready = response.statusCode > 0;
+      } catch (_) {
+        ready = false;
+      } finally {
+        client.close(force: true);
+      }
+      if (ready) break;
+      await Future<void>.delayed(const Duration(seconds: 1));
+    }
+    if (!mounted) return;
+    if (!ready) {
+      _showSnack('OpenCode WebUI 暂未响应，请查看终端日志');
+      return;
+    }
+    homeController.requestOpenOpenCodeWebUi();
+    widget.onNavigate?.call(1);
+  }
+
   Widget _buildEnvironmentCard(BuildContext context) {
     final steps = [
       _EnvStep(
@@ -1716,6 +2480,14 @@ class _LauncherPageState extends State<LauncherPage>
         reinstallDescription:
             '将重新克隆 AstrBot 并重建 Python 依赖，尽量保留 data 数据目录。是否继续？',
       ),
+      _EnvStep(
+        'opencode',
+        'OpenCode',
+        'AI 编程助手',
+        const Icon(Icons.smart_toy_outlined),
+        isExtension: true,
+        reinstallDescription: '将重新下载 OpenCode 二进制文件。是否继续？',
+      ),
     ];
 
     return GlassPanel(
@@ -1724,36 +2496,69 @@ class _LauncherPageState extends State<LauncherPage>
       blur: homeController.glassBlurAmount.value * 30,
       child: ExpansionTile(
         tilePadding: EdgeInsets.zero,
+        onExpansionChanged: (expanded) {
+          if (mounted) setState(() => _environmentExpanded = expanded);
+        },
         leading: const Icon(Icons.inventory_2_outlined),
-        title: Text('环境管理', style: Theme.of(context).textTheme.titleMedium),
-        subtitle: const Text('分步安装与修复组件'),
-        trailing: _checkingEnvironment
-            ? const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : IconButton(
-                tooltip: '刷新状态',
-                onPressed: _refreshEnvironmentStatus,
-                icon: const Icon(Icons.refresh),
-              ),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('环境管理', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(width: 8),
+            _buildInstallerScriptStatusChip(),
+          ],
+        ),
+        subtitle: Text(_environmentExpanded ? '点击收起' : '点击展开'),
+        trailing: _homeButton(
+          context: context,
+          tone: EnvironmentConfig.githubProxy != EnvironmentConfig.autoProxy &&
+                  EnvironmentConfig.githubProxy !=
+                      EnvironmentConfig.directProxy
+              ? _HomeButtonTone.success
+              : _HomeButtonTone.secondary,
+          onPressed: _showGithubProxyDialog,
+          icon: const Icon(Icons.speed),
+          label: const Text('加速器'),
+        ),
         children: [
           Padding(
             padding: const EdgeInsets.only(top: 12),
-            child: ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.speed),
-              title: const Text('GitHub 代理'),
-              subtitle: Text(
-                '${EnvironmentConfig.labelForProxy(EnvironmentConfig.githubProxy)} · 点击测速并选择镜像',
-              ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: _showGithubProxyDialog,
+            child: Row(
+              children: [
+                Expanded(
+                  child: _homeButton(
+                    context: context,
+                    tone: _HomeButtonTone.primary,
+                    onPressed: _checkThenOfferInstallerUpdate,
+                    icon: const Icon(Icons.system_update_alt),
+                    label: Text(
+                      _installerScriptState == _InstallerScriptState.notDownloaded
+                          ? '下载脚本'
+                          : '更新脚本',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _homeButton(
+                    context: context,
+                    onPressed: _importInstallerPackage,
+                    icon: const Icon(Icons.upload_file),
+                    label: const Text('导入脚本'),
+                  ),
+                ),
+              ],
             ),
           ),
           const SizedBox(height: 8),
-          ...steps.map(_buildEnvironmentStepTile),
+          ...steps.take(4).map(_buildEnvironmentStepTile),
+          const Divider(height: 24),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text('扩展应用', style: Theme.of(context).textTheme.labelLarge),
+          ),
+          const SizedBox(height: 4),
+          ...steps.skip(4).map(_buildEnvironmentStepTile),
         ],
       ),
     );
@@ -1770,8 +2575,11 @@ class _LauncherPageState extends State<LauncherPage>
         ? Icons.lock_outline
         : state.installed
             ? Icons.check_circle
-            : Icons.error;
+            : step.isExtension
+                ? null
+                : Icons.error;
     final buttonText = state.installed ? '重装' : '安装';
+    final scriptReady = _installerScriptState == _InstallerScriptState.valid;
 
     return ListTile(
       contentPadding: EdgeInsets.zero,
@@ -1782,11 +2590,12 @@ class _LauncherPageState extends State<LauncherPage>
             data: IconThemeData(color: state.enabled ? null : Colors.grey),
             child: step.icon,
           ),
-          Positioned(
-            right: -8,
-            bottom: -6,
-            child: Icon(statusIcon, size: 16, color: color),
-          ),
+          if (statusIcon != null)
+            Positioned(
+              right: -8,
+              bottom: -6,
+              child: Icon(statusIcon, size: 16, color: color),
+            ),
         ],
       ),
       title: Text(
@@ -1794,10 +2603,15 @@ class _LauncherPageState extends State<LauncherPage>
         style: TextStyle(color: state.enabled ? null : Colors.grey),
       ),
       subtitle: Text(
-        state.enabled ? step.subtitle : '请先完成上方依赖项',
+        state.enabled
+            ? step.subtitle
+            : scriptReady
+                ? '请先安装上方依赖项'
+                : '请先下载或更新脚本',
         style: TextStyle(color: state.enabled ? null : Colors.grey),
       ),
-      trailing: FilledButton.tonalIcon(
+      trailing: _homeButton(
+        context: context,
         onPressed: state.enabled ? () => _runStep(step, state) : null,
         icon: const Icon(Icons.download),
         label: Text(buttonText),
@@ -1807,32 +2621,81 @@ class _LauncherPageState extends State<LauncherPage>
 }
 
 class _EnvironmentLoadingView extends StatelessWidget {
-  const _EnvironmentLoadingView();
+  final Object? error;
+  final VoidCallback? onRetry;
+  final String stage;
+  final double progress;
+
+  const _EnvironmentLoadingView({
+    this.error,
+    this.onRetry,
+    required this.stage,
+    required this.progress,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final failed = error != null;
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(
-            width: 32,
-            height: 32,
-            child: CircularProgressIndicator(strokeWidth: 3),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            '正在检查运行环境…',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-          const SizedBox(height: 6),
-          Text(
-            '确认 AstrBot 与 NapCat 安装状态',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (failed)
+              Icon(
+                Icons.error_outline,
+                size: 32,
+                color: Theme.of(context).colorScheme.error,
+              )
+            else
+              const SizedBox(
+                width: 32,
+                height: 32,
+                child: CircularProgressIndicator(strokeWidth: 3),
+              ),
+            const SizedBox(height: 16),
+            Text(
+              failed ? '运行环境准备失败' : stage,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              failed
+                  ? '请重试后再进入主页'
+                  : '首次启动可能需要一些时间，完成后将自动进入主页',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
+            if (!failed) ...[
+              const SizedBox(height: 16),
+              SizedBox(
+                width: 220,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(99),
+                  child: LinearProgressIndicator(value: progress),
                 ),
-          ),
-        ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '${(progress * 100).round()}%',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+            ],
+            if (failed) ...[
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh),
+                label: const Text('重试'),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -2045,6 +2908,13 @@ class _GithubProxyDialogState extends State<_GithubProxyDialog> {
   final Map<String, int> _latencies = {};
   final Set<String> _testing = {};
 
+  String get _selectedProxyLabel {
+    final selected = EnvironmentConfig.githubProxy;
+    if (selected == EnvironmentConfig.autoProxy) return 'AUTO';
+    if (selected == EnvironmentConfig.directProxy) return '直连';
+    return EnvironmentConfig.labelForProxy(selected);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -2198,10 +3068,10 @@ class _GithubProxyDialogState extends State<_GithubProxyDialog> {
           children: [
             Row(
               children: [
-                const Expanded(
+                Expanded(
                   child: Text(
-                    '点选一个镜像作为下载代理',
-                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                    '当前选择节点：$_selectedProxyLabel',
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
                   ),
                 ),
                 TextButton.icon(
@@ -2248,6 +3118,7 @@ class _EnvStep {
   final String subtitle;
   final Widget icon;
   final String? reinstallDescription;
+  final bool isExtension;
 
   const _EnvStep(
     this.id,
@@ -2255,6 +3126,7 @@ class _EnvStep {
     this.subtitle,
     this.icon, {
     this.reinstallDescription,
+    this.isExtension = false,
   });
 
   String get reinstallMessage =>
@@ -2337,4 +3209,15 @@ class _EnvStepState {
   const _EnvStepState.unknown()
       : installed = false,
         enabled = false;
+}
+
+enum _InstallerScriptState { valid, unknownVersion, notDownloaded }
+
+enum _HomeButtonTone { primary, secondary, success, destructive }
+
+class _InstallerScriptInfo {
+  final _InstallerScriptState state;
+  final String? version;
+
+  const _InstallerScriptInfo({required this.state, this.version});
 }

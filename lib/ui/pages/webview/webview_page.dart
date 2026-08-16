@@ -19,11 +19,13 @@ import '../../../core/config/ui_preferences.dart';
 class WebViewPage extends StatefulWidget {
   final bool embedded;
   final double bottomContentInset;
+  final VoidCallback? onBackToHome;
 
   const WebViewPage({
     super.key,
     this.embedded = false,
     this.bottomContentInset = 0,
+    this.onBackToHome,
   });
 
   static WebViewController? _astrBotController;
@@ -51,6 +53,7 @@ class _WebViewPageState extends State<WebViewPage> {
   Worker? _customWebViewsWorker;
   Worker? _napCatTokenWorker;
   bool _astrBotInitialPasswordFallbackUsed = false;
+  bool _handlingEmbeddedBack = false;
   String? _lastAstrBotInitialPassword;
 
   final HomeController homeController = Get.find<HomeController>();
@@ -830,7 +833,13 @@ class _WebViewPageState extends State<WebViewPage> {
     }
 
     if (widget.embedded) {
-      return _buildEmbeddedWebUiPage();
+      return PopScope<Object?>(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, result) {
+          if (!didPop) _handleEmbeddedBack();
+        },
+        child: _buildEmbeddedWebUiPage(),
+      );
     }
 
     return Obx(() {
@@ -896,6 +905,27 @@ class _WebViewPageState extends State<WebViewPage> {
         ),
       );
     });
+  }
+
+  Future<void> _handleEmbeddedBack() async {
+    if (_handlingEmbeddedBack) return;
+    _handlingEmbeddedBack = true;
+    try {
+      final targets = _buildWebUiTargets();
+      if (targets.isEmpty) {
+        widget.onBackToHome?.call();
+        return;
+      }
+      final selectedIndex = _currentIndex.clamp(0, targets.length - 1).toInt();
+      final controller = targets[selectedIndex].controller;
+      if (await controller.canGoBack()) {
+        await controller.goBack();
+      } else {
+        widget.onBackToHome?.call();
+      }
+    } finally {
+      _handlingEmbeddedBack = false;
+    }
   }
 
   Widget _buildVisiblePage(
@@ -1078,6 +1108,20 @@ class _WebViewPageState extends State<WebViewPage> {
         url: ServicePorts.dashboardUrl,
         controller: _astrBotController,
       ));
+    }
+
+    if (homeController.isOpenCodeInstalled.value &&
+        !hidden.contains('opencode')) {
+      final url = ServicePorts.openCodeWebUiUrl;
+      targets.add(
+        _WebUiTarget(
+          id: 'opencode',
+          title: 'OpenCode',
+          icon: Icons.smart_toy_outlined,
+          url: url,
+          controller: _getCustomController(url),
+        ),
+      );
     }
 
     for (final instance in homeController.napCatInstances) {
@@ -1387,7 +1431,9 @@ class _WebViewPageState extends State<WebViewPage> {
       await _astrBotController.loadRequest(Uri.parse('about:blank'));
       return;
     }
-    if (target.id.startsWith('napcat:') || target.customWebViewIndex != null) {
+    if (target.id == 'opencode' ||
+        target.id.startsWith('napcat:') ||
+        target.customWebViewIndex != null) {
       final controller = _customControllers.remove(target.url);
       await controller?.clearCache();
     }
