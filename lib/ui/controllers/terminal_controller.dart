@@ -794,8 +794,16 @@ class HomeController extends GetxController {
           link.createSync('${RuntimeEnvir.binPath}/busybox');
         }
       }
-      Link link = Link('${RuntimeEnvir.binPath}/file');
-      link.createSync('/system/bin/file');
+      // file 命令不是 busybox 提供的，单独链到系统实现；
+      // 这个链接第二次启动时一定已存在，不能无条件 create（会抛 PathExistsException）
+      final fileLink = Link('${RuntimeEnvir.binPath}/file');
+      if (!fileLink.existsSync()) {
+        try {
+          fileLink.createSync('/system/bin/file');
+        } catch (e) {
+          Log.e('Create file link failed -> $e');
+        }
+      }
     } catch (e) {
       Log.e('Create link failed -> $e');
     }
@@ -808,6 +816,8 @@ class HomeController extends GetxController {
 
   Future<void> loadAstrBot() async {
     if (isAstrBotStarting.value || isAstrBotRunning.value) return;
+    // 用户主动启动（或自愈重启）都算「希望它在跑」，清掉手动停止的标记
+    UiPreferences.saveAstrBotUserStopped(false);
     isAstrBotStarting.value = true;
     isAstrBotRunning.value = false;
     showStartupProgress = true;
@@ -923,7 +933,15 @@ class HomeController extends GetxController {
       _isQrcodeProcessed = false;
       webviewHasOpen = false;
       isAstrBotRunning.value = false;
+      // 记下「是用户自己停的」，否则几十秒后自愈会把它当成掉线拉起来
+      UiPreferences.saveAstrBotUserStopped(true);
       _writeTerminal('\r\n[AstrBot] 已停止\r\n');
+      unawaited(StatusTimeline.instance.record(
+        'astrbot',
+        'astrbot_stopped',
+        'AstrBot 已停止，自动恢复已暂停（需手动启动）',
+        level: TimelineLevel.warning,
+      ));
     } catch (e) {
       _writeTerminal('\r\n[AstrBot] 停止失败: $e\r\n');
       rethrow;
@@ -937,6 +955,54 @@ class HomeController extends GetxController {
       File('$ubuntuPath/root/AstrBot/pyproject.toml').existsSync() &&
       Directory('$ubuntuPath/root/AstrBot/.venv').existsSync() &&
       File('$ubuntuPath/root/.local/bin/uv').existsSync();
+
+  /// 自愈第一级：只重启 AstrBot 进程，不动 proot 环境
+  Future<void> healRestartAstrBot() async {
+    if (isAstrBotStarting.value || isAstrBotStopping.value) {
+      Log.i('自愈重启被跳过：当前正在启动或停止', tag: 'AstrBot');
+      return;
+    }
+    await StatusTimeline.instance.record(
+      'astrbot',
+      'heal_restart',
+      '自愈：重新拉起 AstrBot 进程',
+      level: TimelineLevel.warning,
+    );
+    try {
+      if (isAstrBotRunning.value) {
+        await stopAstrBot();
+      }
+      await loadAstrBot();
+    } catch (e) {
+      await StatusTimeline.instance.record(
+        'astrbot',
+        'heal_restart_failed',
+        '自愈重启失败：$e',
+        level: TimelineLevel.error,
+        dedupe: false,
+      );
+      rethrow;
+    }
+  }
+
+  /// 自愈第二级：连 PTY 一起重建
+  Future<void> healRestartEnvironment() async {
+    if (isAstrBotStarting.value || isAstrBotStopping.value) return;
+    await StatusTimeline.instance.record(
+      'astrbot',
+      'heal_environment',
+      '自愈：重建运行环境（PTY 与 bin 链接）',
+      level: TimelineLevel.error,
+    );
+    try {
+      pseudoTerminal?.kill(ProcessSignal.sigkill);
+    } catch (_) {}
+    pseudoTerminal = null;
+    napcatTerminal = null;
+    isAstrBotRunning.value = false;
+    isAstrBotStarting.value = false;
+    await loadAstrBot();
+  }
 
   Future<void> _terminateAstrBotProcessTree({
     int? rootPtyPid,

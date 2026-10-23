@@ -16,6 +16,7 @@ class UiPreferences {
   static SettingNode get _showTerminalShortcutBar =>
       'show_terminal_shortcut_bar'.setting;
   static SettingNode get _webUiZoomLevels => 'web_ui_zoom_levels'.setting;
+  static SettingNode get _astrBotUserStopped => 'astrbot_user_stopped'.setting;
 
   static String get homeBackgroundPath =>
       _homeBackgroundPath.get()?.toString() ?? '';
@@ -32,6 +33,14 @@ class UiPreferences {
       _readDouble(_terminalFontSize, 13.0).clamp(10.0, 22.0).toDouble();
   static bool get showTerminalShortcutBar =>
       _readBool(_showTerminalShortcutBar, true);
+
+  /// 用户手动点过「停止 AstrBot」：自愈要让路，别过一会儿又把它偷偷拉起来
+  static bool get astrBotUserStopped => _readBool(_astrBotUserStopped, false);
+
+  static void saveAstrBotUserStopped(bool value) {
+    _astrBotUserStopped.set(value);
+  }
+
   static Map<String, int> get webUiZoomLevels {
     final value = _webUiZoomLevels.get();
     if (value == null) return {};

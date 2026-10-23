@@ -1,14 +1,25 @@
+import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show DartPluginRegistrant;
+
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:global_repository/global_repository.dart';
+
+import '../config/service_ports.dart';
+import 'keep_alive_guard.dart';
+import 'power_policy.dart';
+import 'status_timeline.dart';
 
 /// 前台服务管理类
 /// Foreground Service Manager
 class ForegroundServiceManager {
   /// 标记用户是否点击了停止按钮（只有这种情况才不重建）
   static bool _userClickedStopButton = false;
+
   /// 初始化前台服务
   /// Initialize foreground service
+  ///
+  /// 心跳间隔和唤醒锁由省电策略决定，切换档位时重新调用即可生效。
   static void init() {
     FlutterForegroundTask.init(
       androidNotificationOptions: AndroidNotificationOptions(
@@ -23,22 +34,71 @@ class ForegroundServiceManager {
         showNotification: false,
       ),
       foregroundTaskOptions: ForegroundTaskOptions(
-        eventAction: ForegroundTaskEventAction.repeat(5000), // 每5秒检查一次
+        eventAction: ForegroundTaskEventAction.repeat(
+          PowerPolicy.foregroundEventSeconds * 1000,
+        ),
         autoRunOnBoot: false,
-        allowWakeLock: true,
+        allowWakeLock: PowerPolicy.allowWakeLock,
         allowWifiLock: false,
       ),
     );
   }
 
+  /// 切换省电策略后重新应用
+  /// Re-apply options after the power profile changed
+  static Future<void> applyPowerPolicy() async {
+    init();
+    if (await FlutterForegroundTask.isRunningService) {
+      await FlutterForegroundTask.restartService();
+    }
+  }
+
+  /// 把后台 isolate 需要的最少参数写进去
+  /// Persist the parameters the service isolate needs
+  static Future<void> _saveGuardContext() async {
+    // 服务 isolate 里 RuntimeEnvir 没有初始化，configPath 会直接抛异常；
+    // 那种场景下保存不了也没关系，后台守护用默认参数即可。
+    String configPath;
+    try {
+      configPath = RuntimeEnvir.configPath;
+    } catch (_) {
+      return;
+    }
+    if (configPath.isEmpty) return;
+    try {
+      await FlutterForegroundTask.saveData(
+        key: KeepAliveCommand.configPathKey,
+        value: configPath,
+      );
+      final config = GuardConfig.fromPowerPolicy(ServicePorts.dashboardPort);
+      await FlutterForegroundTask.saveData(
+        key: KeepAliveCommand.guardConfigKey,
+        value: jsonEncode(config.toJson()),
+      );
+    } catch (e) {
+      Log.w('保存守护参数失败: $e', tag: 'ForegroundService');
+    }
+  }
+
   /// 启动前台服务
   /// Start foreground service
-  static Future<ServiceRequestResult> startService() async {
+  static Future<ServiceRequestResult> startService({
+    bool restartIfRunning = false,
+  }) async {
     _userClickedStopButton = false; // 重置停止标记
     Log.i('启动前台服务...', tag: 'ForegroundService');
 
+    await _saveGuardContext();
+
     if (await FlutterForegroundTask.isRunningService) {
-      Log.i('服务已在运行，重启服务', tag: 'ForegroundService');
+      if (!restartIfRunning) {
+        // 服务本来就在跑，直接返回成功。
+        // 以前这里无条件 restartService，服务 isolate 每次都以为
+        // “服务没起来”又去重建一次，形成 300ms 一次的重启风暴。
+        Log.i('服务已在运行，跳过重启', tag: 'ForegroundService');
+        return const ServiceRequestSuccess();
+      }
+      Log.i('服务已在运行，按需重启', tag: 'ForegroundService');
       return FlutterForegroundTask.restartService();
     } else {
       Log.i('启动新服务', tag: 'ForegroundService');
@@ -101,6 +161,8 @@ class ForegroundServiceManager {
 /// Foreground service callback
 @pragma('vm:entry-point')
 void startCallback() {
+  // 后台 isolate 需要插件注册，否则 MethodChannel / 通知都不可用
+  DartPluginRegistrant.ensureInitialized();
   FlutterForegroundTask.setTaskHandler(KeepAliveTaskHandler());
 }
 
@@ -110,42 +172,81 @@ class KeepAliveTaskHandler extends TaskHandler {
   /// 服务重建计数器
   int _rebuildCount = 0;
 
+  /// 后台运行的守护（只做探活，动作交给主 isolate）
+  KeepAliveGuard? _guard;
+
   /// 标记是否是用户主动划掉通知（用于区分系统自动清理）
   static bool _userDismissedNotification = false;
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
-    // 服务启动时调用
     Log.i('前台服务已启动', tag: 'KeepAliveTaskHandler');
+
+    // 后台 isolate 里 RuntimeEnvir / settings 都可能是空的，
+    // 所以时间线目录与守护参数都由主 isolate 预先写进来。
+    try {
+      final configPath = await FlutterForegroundTask.getData<String>(
+        key: KeepAliveCommand.configPathKey,
+      );
+      if (configPath != null && configPath.isNotEmpty) {
+        StatusTimeline.instance.configure(configPath);
+      }
+      final raw = await FlutterForegroundTask.getData<String>(
+        key: KeepAliveCommand.guardConfigKey,
+      );
+      final config = GuardConfig.fromJsonString(raw) ??
+          const GuardConfig(
+            dashboardPort: 6185,
+            probeIntervalSeconds: 20,
+            failureThreshold: 3,
+            autoHealEnabled: true,
+          );
+      _guard = KeepAliveGuard(
+        isBackground: true,
+        config: config,
+        probeOnly: true,
+      );
+      // 只负责发现掉线：把主 isolate 叫醒，自愈的级别和动作都由它统一执行
+      _guard!.onProbeDown = () {
+        FlutterForegroundTask.sendDataToMain({
+          'cmd': KeepAliveCommand.probeDown,
+        });
+      };
+      // 探活由 onRepeatEvent 驱动，后台不再自己开定时器
+      _guard!.start(useTimer: false);
+    } catch (e) {
+      Log.e('初始化后台守护失败: $e', tag: 'KeepAliveTaskHandler');
+    }
   }
 
   @override
   void onRepeatEvent(DateTime timestamp) {
     // 根据 eventAction 设置的间隔定期调用
-    // 这里执行保活逻辑和自动重建检测
-
-    // 定期检查服务状态，如果发现服务已停止且用户没有点击停止按钮，则重建
-    FlutterForegroundTask.isRunningService.then((isRunning) {
-      if (!isRunning && !ForegroundServiceManager.userClickedStopButton) {
-        Log.w('检测到服务意外停止，准备重建...', tag: 'KeepAliveTaskHandler');
-        _rebuildService();
-      }
-    });
+    // 这里只做探活；服务是否还活着由主 isolate 每 30 秒兜底检查。
+    // 在服务 isolate 里判断 isRunningService 会在重启窗口内得到 false，
+    // 进而触发自我重启的死循环。
+    _guard?.tick();
   }
 
   @override
   Future<void> onDestroy(DateTime timestamp, bool isTaskRemoved) async {
     // 服务销毁时调用
     // isTaskRemoved: 用户从最近任务中移除应用（值为true）
-    Log.i('前台服务被销毁，isTaskRemoved: $isTaskRemoved, 用户主动划掉: $_userDismissedNotification', tag: 'KeepAliveTaskHandler');
+    Log.i(
+        '前台服务被销毁，isTaskRemoved: $isTaskRemoved, 用户主动划掉: $_userDismissedNotification',
+        tag: 'KeepAliveTaskHandler');
+
+    _guard?.stop();
 
     // 重建场景判断：
     // 1. 如果是用户主动划掉通知：onNotificationDismissed() 已处理，这里不处理
     // 2. 如果是系统自动清理通知（如充电完成等）：onNotificationDismissed() 不会被调用，需要在这里重建
     // 3. 如果是用户点击停止按钮：不重建
 
-    if (!_userDismissedNotification && !ForegroundServiceManager.userClickedStopButton) {
-      Log.w('检测到系统自动清理通知或服务被终止，准备重建...', tag: 'KeepAliveTaskHandler');
+    if (!_userDismissedNotification &&
+        !ForegroundServiceManager.userClickedStopButton) {
+      Log.w('检测到系统自动清理通知或服务被终止，准备重建...',
+          tag: 'KeepAliveTaskHandler');
       // 延迟重建以确保服务完全关闭
       await Future.delayed(const Duration(milliseconds: 500));
       await _rebuildService();
@@ -155,8 +256,17 @@ class KeepAliveTaskHandler extends TaskHandler {
     _userDismissedNotification = false;
   }
 
+  /// 上次重建时间，防止短时间内反复重建
+  static DateTime? _lastRebuildAt;
+
   /// 重建服务
   Future<void> _rebuildService() async {
+    final now = DateTime.now();
+    final last = _lastRebuildAt;
+    if (last != null && now.difference(last) < const Duration(seconds: 15)) {
+      return;
+    }
+    _lastRebuildAt = now;
     try {
       _rebuildCount++;
       Log.i('正在重建服务（第 $_rebuildCount 次）...', tag: 'KeepAliveTaskHandler');
@@ -165,6 +275,12 @@ class KeepAliveTaskHandler extends TaskHandler {
 
       if (result is ServiceRequestSuccess) {
         Log.i('服务重建成功', tag: 'KeepAliveTaskHandler');
+        await StatusTimeline.instance.record(
+          'service',
+          'service_rebuilt',
+          '后台服务已自动重建',
+          level: TimelineLevel.success,
+        );
         _rebuildCount = 0; // 重置计数器
       } else if (result is ServiceRequestFailure) {
         Log.e('服务重建失败: ${result.error}', tag: 'KeepAliveTaskHandler');
@@ -188,8 +304,13 @@ class KeepAliveTaskHandler extends TaskHandler {
     // 通知按钮点击时调用
     if (id == 'btn_stop') {
       Log.i('用户点击停止按钮', tag: 'KeepAliveTaskHandler');
-      // 用户点击停止运行按钮，先标记为手动停止，然后退出应用
-      ForegroundServiceManager.stopService().then((_) {
+      // 交给主 isolate 先停 AstrBot（停进程、等端口释放），再关服务退出；
+      // 主 isolate 不在时由超时兜底，不能像以前一样直接 exit(0) 留下孤儿进程。
+      FlutterForegroundTask.sendDataToMain({
+        'cmd': KeepAliveCommand.gracefulStop,
+      });
+      Future.delayed(const Duration(milliseconds: 2500), () async {
+        await ForegroundServiceManager.stopService();
         exit(0);
       });
     }
