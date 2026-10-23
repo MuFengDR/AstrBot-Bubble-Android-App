@@ -8,6 +8,7 @@ import 'package:settings/settings.dart';
 import 'dart:async';
 
 import 'generated/l10n.dart';
+import 'core/services/auto_backup_scheduler.dart';
 import 'core/services/foreground_service.dart';
 import 'ui/routes/app_routes.dart';
 
@@ -62,6 +63,9 @@ class _AstrBotState extends State<AstrBot> with WidgetsBindingObserver {
 
     // 启动服务状态监听器，定期检查服务是否运行
     _startServiceMonitor();
+
+    // 自动备份：启动 2 分钟后首次检查，之后每 15 分钟看一次是否到点
+    AutoBackupScheduler.instance.start();
   }
 
   /// 启动服务状态监听器
