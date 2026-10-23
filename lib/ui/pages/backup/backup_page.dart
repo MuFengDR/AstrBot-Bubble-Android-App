@@ -92,7 +92,8 @@ class _BackupPageState extends State<BackupPage> {
         title: const Text('恢复这份备份？'),
         content: Text(
           '将用 ${entry.name} 覆盖当前的 AstrBot 数据、NapCat 配置和应用设置。\n\n'
-          '开始前会自动备份一次当前状态，恢复过程不要退出应用。',
+          '开始前会先停止 AstrBot，并自动备份一次当前状态；'
+          '恢复完成后需要手动重新启动 AstrBot。恢复过程不要退出应用。',
         ),
         actions: [
           TextButton(
@@ -114,22 +115,25 @@ class _BackupPageState extends State<BackupPage> {
       _progress = 0;
     });
     try {
+      // 先停 AstrBot 再覆盖：进程正在写数据库时换文件，轻则回滚到旧数据重则损坏
+      final controller = Get.isRegistered<HomeController>()
+          ? Get.find<HomeController>()
+          : null;
+      if (controller != null && controller.isAstrBotRunning.value) {
+        setState(() {
+          _stage = '正在停止 AstrBot…';
+          _progress = 0;
+        });
+        await controller.stopAstrBot();
+      }
       await BackupService.restore(
         entry.file,
         onProgress: _updateProgress,
       );
-      if (mounted) {
-        final controller = Get.isRegistered<HomeController>()
-            ? Get.find<HomeController>()
-            : null;
-        if (controller != null && controller.isAstrBotRunning.value) {
-          await controller.stopAstrBot();
-        }
-      }
       await _reload();
       _snack('恢复完成，重新启动 AstrBot 后生效');
     } catch (e) {
-      _snack('恢复失败：$e', error: true);
+      _snack('恢复失败：$e（AstrBot 已保持停止，可手动启动）', error: true);
       // 失败时也刷新一次：恢复前会自动打一份当前状态的快照，列表里要能看见
       await _reload();
     } finally {

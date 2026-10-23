@@ -9,6 +9,7 @@ import 'package:settings/settings.dart';
 import 'dart:async';
 
 import 'generated/l10n.dart';
+import 'core/config/ui_preferences.dart';
 import 'core/services/auto_backup_scheduler.dart';
 import 'core/services/foreground_service.dart';
 import 'core/services/keep_alive_guard.dart';
@@ -121,8 +122,13 @@ class _AstrBotState extends State<AstrBot> with WidgetsBindingObserver {
       ..onRestartAstrBot = _healRestartAstrBot
       ..onRestartEnvironment = _healRestartEnvironment
       ..onRestartService = _healRestartService
-      // 环境还没装好时不必反复重启，等用户装完再守
-      ..canHeal = (() => _findController()?.isAstrBotInstalled ?? false)
+      // 环境还没装好时不必反复重启，等用户装完再守；
+      // 用户手动点过「停止」时也要让路，否则停止按钮等于没点
+      ..canHeal = (() {
+        final controller = _findController();
+        if (controller == null || !controller.isAstrBotInstalled) return false;
+        return !UiPreferences.astrBotUserStopped;
+      })
       ..start();
 
     // 通知桥是可选功能，延迟启动，别拖慢首屏

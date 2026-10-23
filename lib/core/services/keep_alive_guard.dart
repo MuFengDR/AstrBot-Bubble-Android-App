@@ -282,7 +282,7 @@ class KeepAliveGuard {
         await StatusTimeline.instance.record(
           'guard',
           'heal_skipped_install',
-          'AstrBot 尚未安装，已跳过自愈动作',
+          'AstrBot 未安装或已被手动停止，已跳过自愈动作',
           level: TimelineLevel.info,
         );
       }

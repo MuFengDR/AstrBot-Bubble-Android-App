@@ -334,6 +334,10 @@ class BackupService {
     if (!await archive.exists()) {
       throw StateError('备份文件不存在');
     }
+    if (_busy) {
+      throw StateError('已有一个备份/恢复任务在执行');
+    }
+    _busy = true;
     final tmp = Directory('${backupDir.path}/$_restoreTmpName');
     if (await tmp.exists()) {
       await tmp.delete(recursive: true);
@@ -362,7 +366,9 @@ class BackupService {
 
       onProgress?.call('正在备份当前状态…', 0.6);
       try {
-        await createBackup();
+        // 这里已经持有 _busy，不能再走 createBackup（会被自己的锁挡住）；
+        // 快照标成 auto，避免反复恢复把手动备份的名额挤光
+        await _createBackupInternal(targets, auto: true);
       } catch (e) {
         Log.w('恢复前自动备份失败，继续恢复: $e', tag: 'Backup');
       }
@@ -390,6 +396,7 @@ class BackupService {
       try {
         if (await tmp.exists()) await tmp.delete(recursive: true);
       } catch (_) {}
+      _busy = false;
     }
   }
 

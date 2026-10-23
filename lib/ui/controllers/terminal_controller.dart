@@ -818,6 +818,8 @@ class HomeController extends GetxController {
 
   Future<void> loadAstrBot() async {
     if (isAstrBotStarting.value || isAstrBotRunning.value) return;
+    // 用户主动启动（或自愈重启）都算「希望它在跑」，清掉手动停止的标记
+    UiPreferences.saveAstrBotUserStopped(false);
     isAstrBotStarting.value = true;
     isAstrBotRunning.value = false;
     showStartupProgress = true;
@@ -933,11 +935,13 @@ class HomeController extends GetxController {
       _isQrcodeProcessed = false;
       webviewHasOpen = false;
       isAstrBotRunning.value = false;
+      // 记下「是用户自己停的」，否则几十秒后自愈会把它当成掉线拉起来
+      UiPreferences.saveAstrBotUserStopped(true);
       _writeTerminal('\r\n[AstrBot] 已停止\r\n');
       unawaited(StatusTimeline.instance.record(
         'astrbot',
         'astrbot_stopped',
-        'AstrBot 已停止',
+        'AstrBot 已停止，自动恢复已暂停（需手动启动）',
         level: TimelineLevel.warning,
       ));
     } catch (e) {
@@ -2622,29 +2626,67 @@ fi
   /// AstrBot 就绪后，把上次处于运行状态的 NapCat 实例自动拉起来。
   /// 只对 autoStart=true 的实例生效：用户手动点过「停止」就不会再自启。
   Future<void> autoStartNapCatInstances() async {
-    if (_autoStartNapCatBusy) return;
-    if (!isAstrBotInstalled) return;
+    if (_autoStartNapCatBusy) {
+      Log.i('自启跳过：已有任务在执行', tag: 'NapCatAuto');
+      return;
+    }
+    if (!isAstrBotInstalled) {
+      Log.i('自启跳过：环境未安装', tag: 'NapCatAuto');
+      return;
+    }
     final targets = napCatInstances
         .where((instance) => instance['autoStart'] == true)
         .map((instance) => instance['id']?.toString() ?? '')
         .where((id) =>
             id.isNotEmpty && !_napCatInstanceTerminals.containsKey(id))
         .toList();
+    Log.i(
+      '自启检查：实例 ${napCatInstances.length} 个，'
+      'autoStart=${napCatInstances.where((e) => e['autoStart'] == true).length} 个，'
+      '目标 ${targets.length} 个，运行中 ${_napCatInstanceTerminals.keys.toList()}',
+      tag: 'NapCatAuto',
+    );
     if (targets.isEmpty) return;
 
     _autoStartNapCatBusy = true;
     try {
-      // 等 ubuntu 会话 / common.sh 彻底就绪，避免刚 ready 就抢端口
-      await Future<void>.delayed(const Duration(seconds: 2));
+      // 等 ubuntu 会话 / common.sh 彻底就绪，避免刚 ready 就抢端口。
+      // 端口偶尔会比「就绪」晚几十毫秒才通，试几次再判失败，避免一次没通就永远不补。
+      var dashboardReady = false;
+      for (var attempt = 0; attempt < 5; attempt++) {
+        await Future<void>.delayed(
+          Duration(seconds: attempt == 0 ? 2 : 8),
+        );
+        dashboardReady =
+            await HealthProbe.isPortOpen(ServicePorts.dashboardPort);
+        if (dashboardReady) break;
+        Log.i(
+          '自启等待：AstrBot 面板尚未响应（第 ${attempt + 1} 次）',
+          tag: 'NapCatAuto',
+        );
+      }
+      if (!dashboardReady) {
+        unawaited(StatusTimeline.instance.record(
+          'NapCat',
+          'napcat_autostart_skipped',
+          'AstrBot 面板未响应，暂不启动 NapCat',
+          level: TimelineLevel.warning,
+          dedupe: false,
+        ));
+        return;
+      }
       for (final id in targets) {
-        // AstrBot 没在响应就别忙起 NapCat，等它自愈完再说
-        if (!await HealthProbe.isPortOpen(ServicePorts.dashboardPort)) break;
         final instance =
             napCatInstances.firstWhereOrNull((item) => item['id'] == id);
         if (instance == null || instance['autoStart'] != true) continue;
         final name = instance['name']?.toString() ?? id;
         try {
           final port = _parseInt(instance['webUiPort'], 0);
+          Log.i(
+            '自启 $name：端口 $port '
+            '${await _isPortAvailable(port) ? '空闲' : '被占用，先清理'}',
+            tag: 'NapCatAuto',
+          );
           if (port > 0 && !await _isPortAvailable(port)) {
             // 上次残留的 NapCat 进程还占着端口，先清掉再起
             await _stopNapCatInstanceProcesses(id);
