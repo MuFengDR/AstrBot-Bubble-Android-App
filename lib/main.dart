@@ -12,6 +12,7 @@ import 'generated/l10n.dart';
 import 'core/config/ui_preferences.dart';
 import 'core/services/foreground_service.dart';
 import 'core/services/keep_alive_guard.dart';
+import 'core/services/message_bridge.dart';
 import 'core/services/power_policy.dart';
 import 'core/services/status_timeline.dart';
 import 'ui/controllers/terminal_controller.dart';
@@ -131,6 +132,13 @@ class _AstrBotState extends State<AstrBot> with WidgetsBindingObserver {
         return true;
       })
       ..start();
+
+    // 通知桥是可选功能，延迟启动，别拖慢首屏
+    if (PowerPolicy.notifyBridgeEnabled) {
+      Future.delayed(const Duration(seconds: 8), () {
+        unawaited(MessageBridge.instance.start());
+      });
+    }
   }
 
   HomeController? _findController() {
