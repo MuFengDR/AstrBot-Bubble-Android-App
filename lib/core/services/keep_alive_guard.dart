@@ -45,11 +45,15 @@ class GuardConfig {
   final int failureThreshold;
   final bool autoHealEnabled;
 
+  /// 探活是否开启（间隔设成 0 时整块关掉，连定时器都不再探）
+  final bool probeEnabled;
+
   const GuardConfig({
     required this.dashboardPort,
     required this.probeIntervalSeconds,
     required this.failureThreshold,
     required this.autoHealEnabled,
+    this.probeEnabled = true,
   });
 
   factory GuardConfig.fromPowerPolicy(int dashboardPort) {
@@ -58,6 +62,7 @@ class GuardConfig {
       probeIntervalSeconds: PowerPolicy.probeIntervalSeconds,
       failureThreshold: PowerPolicy.failureThreshold,
       autoHealEnabled: PowerPolicy.autoHealEnabled,
+      probeEnabled: PowerPolicy.probeEnabled,
     );
   }
 
@@ -66,6 +71,7 @@ class GuardConfig {
         'probe_interval': probeIntervalSeconds,
         'failure_threshold': failureThreshold,
         'auto_heal': autoHealEnabled,
+        'probe_enabled': probeEnabled,
       };
 
   static GuardConfig? fromJsonString(String? raw) {
@@ -79,6 +85,7 @@ class GuardConfig {
             (decoded['probe_interval'] as num?)?.toInt() ?? 20,
         failureThreshold: (decoded['failure_threshold'] as num?)?.toInt() ?? 3,
         autoHealEnabled: decoded['auto_heal'] == true,
+        probeEnabled: decoded['probe_enabled'] != false,
       );
     } catch (_) {
       return null;
@@ -135,6 +142,12 @@ class KeepAliveGuard {
   /// 「环境未安装所以没自愈」这条说明只记一次
   bool _installSkipLogged = false;
 
+  /// 「还没就绪过，只重启不动环境」这条说明只记一次
+  bool _setupSkipLogged = false;
+
+  /// 「探活已关闭」这条说明只记一次
+  bool _probeDisabledLogged = false;
+
   int get consecutiveFailures => _failures;
   int get currentLevel => _level;
   bool get busy => _busy;
@@ -147,6 +160,18 @@ class KeepAliveGuard {
 
   /// 相邻两级自愈之间的最小间隔，避免疯狂重启
   static const Duration escalateDelay = Duration(seconds: 45);
+
+  /// 冷启动宽限：应用刚起来这段时间里 AstrBot 可能还在初始化，
+  /// 探活失败不代表真掉线，别急着动手。
+  static const Duration startupGrace = Duration(seconds: 120);
+
+  DateTime _createdAt = DateTime.now();
+
+  /// 本次会话里是否成功就绪过。
+  ///
+  /// 从没就绪过（首次安装、正在初始化）时不做第二、三级动作：
+  /// 那时候重启进程和重建环境只会把用户正在做的首次配置打断。
+  bool _everReady = false;
 
   DateTime? _lastProbeAt;
 
@@ -180,11 +205,26 @@ class KeepAliveGuard {
   Future<void> tick({bool force = false}) async {
     if (_busy) return;
     final config = _effective;
+    // 探活间隔设成 0：用户主动关掉了探活与自愈，这里不再动
+    if (!config.probeEnabled) {
+      if (!_probeDisabledLogged) {
+        _probeDisabledLogged = true;
+        await StatusTimeline.instance.record(
+          'guard',
+          'probe_disabled',
+          '探活已关闭（间隔设为 0），不再自动检测与恢复',
+          level: TimelineLevel.info,
+        );
+      }
+      return;
+    }
+    _probeDisabledLogged = false;
     final now = DateTime.now();
     final interval = Duration(seconds: config.probeIntervalSeconds);
     final last = _lastProbeAt;
-    // 后台实例的节奏由 onRepeatEvent（省电档位）决定，这里不再二次节流
-    if (!force && !probeOnly && last != null && now.difference(last) < interval) {
+    // 前台服务的唤醒是固定 10 秒一次，节流统一在这里做；
+    // 主 isolate 由自己的定时器驱动，同样按用户设定的间隔过滤
+    if (!force && last != null && now.difference(last) < interval) {
       return;
     }
     _lastProbeAt = now;
@@ -212,6 +252,7 @@ class KeepAliveGuard {
         _healRounds = 0;
         _nextHealAt = null;
         _installSkipLogged = false;
+        _everReady = true;
         _lastSuccessAt = DateTime.now();
         return;
       }
@@ -274,6 +315,20 @@ class KeepAliveGuard {
       return;
     }
 
+    // 冷启动刚起来的这两分钟，AstrBot 多半还在自检/装依赖，先按兵不动
+    if (now.difference(_createdAt) < startupGrace) {
+      if (!_installSkipLogged) {
+        _installSkipLogged = true;
+        await StatusTimeline.instance.record(
+          'guard',
+          'heal_deferred_startup',
+          '刚启动不足 ${startupGrace.inSeconds} 秒，先等 AstrBot 自己起来',
+          level: TimelineLevel.info,
+        );
+      }
+      return;
+    }
+
     // AstrBot 还没安装时自愈无从下手：反复重启进程、重建环境只是白耗电
     final gate = canHeal;
     if (gate != null && !gate()) {
@@ -282,7 +337,7 @@ class KeepAliveGuard {
         await StatusTimeline.instance.record(
           'guard',
           'heal_skipped_install',
-          'AstrBot 未安装或已被手动停止，已跳过自愈动作',
+          '当前不满足自愈条件（未安装 / 已手动停止 / 首次配置中），已跳过',
           level: TimelineLevel.info,
         );
       }
@@ -292,7 +347,21 @@ class KeepAliveGuard {
 
     _lastHealAt = now;
 
-    final next = _level + 1;
+    var next = _level + 1;
+    // 本次会话从没就绪过（首次安装、正在初始化）：停在第一级。
+    // 这时候重建环境、重启后台服务只会把用户正在做的首次配置打断。
+    if (!_everReady && next > 1) {
+      if (!_setupSkipLogged) {
+        _setupSkipLogged = true;
+        await StatusTimeline.instance.record(
+          'guard',
+          'heal_limited_setup',
+          'AstrBot 还没有就绪过，先只重启进程，不重建环境',
+          level: TimelineLevel.info,
+        );
+      }
+      next = 1;
+    }
     if (next == 1) {
       _level = 1;
       await StatusTimeline.instance.record(

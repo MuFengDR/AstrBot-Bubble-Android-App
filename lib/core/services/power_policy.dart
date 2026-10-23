@@ -1,40 +1,39 @@
 import 'package:settings/settings.dart';
 
-/// 省电策略档位
-/// Power saving profile
-enum PowerMode {
-  performance,
-  balanced,
-  saver;
-
-  static PowerMode fromKey(String? key) {
-    for (final value in PowerMode.values) {
-      if (value.name == key) return value;
-    }
-    return PowerMode.balanced;
-  }
-}
-
 /// 省电策略：统一决定探活频率、前台服务心跳和通知轮询间隔
 /// One place that decides probe interval, foreground heartbeat and polling
 class PowerPolicy {
   PowerPolicy._();
 
-  static SettingNode get _modeNode => 'power_mode'.setting;
+  /// 探活间隔（分钟）。0 表示关闭探活。
+  static SettingNode get _probeMinutesNode => 'probe_interval_minutes'.setting;
   static SettingNode get _autoHealNode => 'auto_heal_enabled'.setting;
   static SettingNode get _notifyMessagesNode => 'notify_messages_enabled'.setting;
   static SettingNode get _notifyErrorsNode => 'notify_errors_enabled'.setting;
   static SettingNode get _notifyBridgeNode => 'notify_bridge_enabled'.setting;
 
-  static PowerMode get mode => PowerMode.fromKey(_safeGet(_modeNode)?.toString());
+  /// 探活间隔（分钟）：0 表示不再探活，默认 60
+  static int get probeIntervalMinutes {
+    final value = _safeGet(_probeMinutesNode);
+    final minutes = value is num
+        ? value.toInt()
+        : int.tryParse(value?.toString() ?? '');
+    return (minutes ?? defaultProbeIntervalMinutes).clamp(0, 1440);
+  }
 
-  static Future<void> setMode(PowerMode value) async {
+  static const int defaultProbeIntervalMinutes = 60;
+  static const int maxProbeIntervalMinutes = 1440;
+
+  static Future<void> setProbeIntervalMinutes(int minutes) async {
     try {
-      _modeNode.set(value.name);
+      _probeMinutesNode.set(minutes.clamp(0, maxProbeIntervalMinutes));
     } catch (_) {
       // 配置存储还没就绪时忽略，下次启动会重新写入
     }
   }
+
+  /// 探活是否开启（间隔为 0 即关闭）
+  static bool get probeEnabled => probeIntervalMinutes > 0;
 
   /// 配置存储（Hive box）在 main() 里才初始化，太早读会抛空指针；
   /// 这里统一兜住，读不到就按默认档位走。
@@ -52,48 +51,31 @@ class PowerPolicy {
     }
   }
 
-  static String label(PowerMode value) => switch (value) {
-        PowerMode.performance => '性能优先',
-        PowerMode.balanced => '均衡',
-        PowerMode.saver => '省电',
-      };
-
-  static String description(PowerMode value) => switch (value) {
-        PowerMode.performance => '每 10 秒探活一次，断线最快恢复，耗电略高',
-        PowerMode.balanced => '每 20 秒探活一次，兼顾恢复速度与耗电',
-        PowerMode.saver => '每 45 秒探活一次，最省电，恢复略慢',
-      };
+  /// 探活间隔的展示文案
+  static String get probeIntervalLabel {
+    final minutes = probeIntervalMinutes;
+    if (minutes <= 0) return '已关闭';
+    if (minutes < 60) return '每 $minutes 分钟一次';
+    final hours = minutes ~/ 60;
+    final rest = minutes % 60;
+    if (rest == 0) return '每 $hours 小时一次';
+    return '每 $hours 小时 $rest 分钟一次';
+  }
 
   /// 前台服务心跳间隔（秒）
-  static int get foregroundEventSeconds => switch (mode) {
-        PowerMode.performance => 5,
-        PowerMode.balanced => 10,
-        PowerMode.saver => 20,
-      };
+  static int get foregroundEventSeconds => 10;
 
-  /// 主 isolate 探活间隔（秒）
-  static int get probeIntervalSeconds => switch (mode) {
-        PowerMode.performance => 10,
-        PowerMode.balanced => 20,
-        PowerMode.saver => 45,
-      };
+  /// 主 isolate 探活间隔（秒）；0 表示关闭
+  static int get probeIntervalSeconds => probeIntervalMinutes * 60;
 
   /// 连续多少次探活失败才判定 AstrBot 掉线
-  static int get failureThreshold => switch (mode) {
-        PowerMode.performance => 2,
-        PowerMode.balanced => 3,
-        PowerMode.saver => 4,
-      };
+  static int get failureThreshold => 3;
 
   /// 消息通知轮询间隔（秒）
-  static int get messagePollSeconds => switch (mode) {
-        PowerMode.performance => 15,
-        PowerMode.balanced => 30,
-        PowerMode.saver => 90,
-      };
+  static int get messagePollSeconds => 30;
 
-  /// 省电档关闭唤醒锁，靠前台服务本身保活
-  static bool get allowWakeLock => mode != PowerMode.saver;
+  /// 保持唤醒锁，靠前台服务本身保活
+  static bool get allowWakeLock => true;
 
   static bool get autoHealEnabled => _readBool(_autoHealNode, true);
   static Future<void> setAutoHealEnabled(bool value) async =>

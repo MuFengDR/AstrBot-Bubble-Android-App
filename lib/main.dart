@@ -92,11 +92,18 @@ class _AstrBotState extends State<AstrBot> with WidgetsBindingObserver {
       ..onRestartEnvironment = _healRestartEnvironment
       ..onRestartService = _healRestartService
       // 环境还没装好时不必反复重启，等用户装完再守；
-      // 用户手动点过「停止」时也要让路，否则停止按钮等于没点
+      // 用户手动点过「停止」时也要让路，否则停止按钮等于没点；
+      // 首次配置（还没设好密码）时用户正在里面操作，重启只会打断他
       ..canHeal = (() {
         final controller = _findController();
-        if (controller == null || !controller.isAstrBotInstalled) return false;
-        return !UiPreferences.astrBotUserStopped;
+        if (controller == null) return false;
+        if (!controller.isAstrBotInstalled) return false;
+        if (UiPreferences.astrBotUserStopped) return false;
+        if (controller.isAstrBotStarting.value ||
+            controller.isAstrBotStopping.value) {
+          return false;
+        }
+        return controller.initialPasswordAssistanceCompleted.value;
       })
       ..start();
   }

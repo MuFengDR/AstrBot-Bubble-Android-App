@@ -46,6 +46,10 @@ class _SettingsPageState extends State<SettingsPage> {
   String _appVersion = '';
   bool _isBatteryOptimizationIgnored = false;
 
+  /// 探活间隔输入框的控制器常驻，避免对话框退场动画未结束就被释放
+  final TextEditingController _probeIntervalController =
+      TextEditingController();
+
   // 存储从GitHub API获取的原始下载URL
   String? _originalDownloadUrl;
 
@@ -54,6 +58,12 @@ class _SettingsPageState extends State<SettingsPage> {
     super.initState();
     _loadAppVersion();
     _checkBatteryOptimizationStatus();
+  }
+
+  @override
+  void dispose() {
+    _probeIntervalController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadAppVersion() async {
@@ -1036,43 +1046,70 @@ class _SettingsPageState extends State<SettingsPage> {
     _disposeTextControllersSafely([commandController]);
   }
 
-  // 选择省电策略
-  // Pick the power saving profile
-  Future<void> _showPowerModeDialog() async {
-    var current = PowerPolicy.mode;
-    await showDialog<void>(
+  // 自定义探活间隔：0 表示关闭探活
+  // Custom probe interval in minutes; 0 turns probing off
+  Future<void> _showProbeIntervalDialog() async {
+    _probeIntervalController.text =
+        PowerPolicy.probeIntervalMinutes.toString();
+    final result = await showDialog<int>(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('省电策略'),
-          contentPadding: const EdgeInsets.symmetric(vertical: 12),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final mode in PowerMode.values)
-                RadioListTile<PowerMode>(
-                  value: mode,
-                  groupValue: current,
-                  title: Text(PowerPolicy.label(mode)),
-                  subtitle: Text(PowerPolicy.description(mode)),
-                  onChanged: (value) async {
-                    if (value == null) return;
-                    await PowerPolicy.setMode(value);
-                    await ForegroundServiceManager.applyPowerPolicy();
-                    setDialogState(() => current = value);
-                    if (mounted) setState(() {});
-                  },
-                ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('关闭'),
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('探活间隔'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: _probeIntervalController,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: const InputDecoration(
+                labelText: '分钟',
+                helperText: '0 - 1440，填 0 表示关闭探活',
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '关闭探活后也不再自动检测掉线与恢复，只保留前台服务。',
+              style: Theme.of(dialogContext).textTheme.bodySmall,
             ),
           ],
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final value = int.tryParse(_probeIntervalController.text.trim());
+              Navigator.of(dialogContext).pop(value);
+            },
+            child: const Text('保存'),
+          ),
+        ],
       ),
+    );
+    if (result == null) return;
+    if (result < 0 || result > PowerPolicy.maxProbeIntervalMinutes) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '请填 0 - ${PowerPolicy.maxProbeIntervalMinutes} 之间的整数',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+    await PowerPolicy.setProbeIntervalMinutes(result);
+    await ForegroundServiceManager.applyPowerPolicy();
+    if (!mounted) return;
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('探活间隔已设为 ${PowerPolicy.probeIntervalLabel}')),
     );
   }
 
@@ -1676,10 +1713,10 @@ class _SettingsPageState extends State<SettingsPage> {
           },
         ),
         ListTile(
-          leading: const Icon(Icons.battery_saver_outlined),
-          title: const Text('省电策略'),
-          subtitle: Text(PowerPolicy.label(PowerPolicy.mode)),
-          onTap: _showPowerModeDialog,
+          leading: const Icon(Icons.timer_outlined),
+          title: const Text('探活间隔'),
+          subtitle: Text(PowerPolicy.probeIntervalLabel),
+          onTap: _showProbeIntervalDialog,
         ),
         SwitchListTile(
           secondary: const Icon(Icons.auto_fix_high),
