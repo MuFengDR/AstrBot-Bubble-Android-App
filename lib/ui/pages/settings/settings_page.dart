@@ -15,6 +15,7 @@ import 'package:file_picker/file_picker.dart';
 import '../../controllers/terminal_controller.dart';
 import '../../../core/constants/scripts.dart' as scripts;
 import '../../../core/services/foreground_service.dart';
+import '../../../core/services/message_bridge.dart';
 import '../../../core/services/password_manager.dart';
 import '../../../core/services/power_policy.dart';
 import '../../../core/services/status_timeline.dart';
@@ -1113,6 +1114,17 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  // 开关消息通知桥
+  Future<void> _toggleNotifyBridge(bool value) async {
+    await PowerPolicy.setNotifyBridgeEnabled(value);
+    if (value) {
+      await MessageBridge.instance.start();
+    } else {
+      MessageBridge.instance.stop();
+    }
+    if (mounted) setState(() {});
+  }
+
   // 打开文件管理器并导航到 AstrBot Ubuntu 文件系统位置
   Future<void> _openFileManager() async {
     try {
@@ -1732,6 +1744,13 @@ class _SettingsPageState extends State<SettingsPage> {
             );
             if (mounted) setState(() {});
           },
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.notifications_active_outlined),
+          title: const Text('消息通知桥'),
+          subtitle: const Text('把 AstrBot 的新消息和报错转成系统通知'),
+          value: PowerPolicy.notifyBridgeEnabled,
+          onChanged: _toggleNotifyBridge,
         ),
         const Padding(
           padding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
