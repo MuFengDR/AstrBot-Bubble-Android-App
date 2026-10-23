@@ -10,6 +10,7 @@ import 'dart:async';
 
 import 'generated/l10n.dart';
 import 'core/config/ui_preferences.dart';
+import 'core/services/auto_backup_scheduler.dart';
 import 'core/services/foreground_service.dart';
 import 'core/services/keep_alive_guard.dart';
 import 'core/services/message_bridge.dart';
@@ -139,6 +140,9 @@ class _AstrBotState extends State<AstrBot> with WidgetsBindingObserver {
         unawaited(MessageBridge.instance.start());
       });
     }
+
+    // 自动备份：启动 2 分钟后首次检查，之后每 15 分钟看一次是否到点
+    AutoBackupScheduler.instance.start();
   }
 
   HomeController? _findController() {
