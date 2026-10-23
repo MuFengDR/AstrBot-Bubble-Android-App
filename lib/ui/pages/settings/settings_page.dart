@@ -1066,12 +1066,12 @@ class _SettingsPageState extends State<SettingsPage> {
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               decoration: const InputDecoration(
                 labelText: '分钟',
-                helperText: '0 - 1440，填 0 表示关闭探活',
+                hintText: '60',
               ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 12),
             Text(
-              '关闭探活后也不再自动检测掉线与恢复，只保留前台服务。',
+              '填 0 - 1440 的整数分钟；填 0 表示关闭探活，同时不再自动检测掉线与恢复。',
               style: Theme.of(dialogContext).textTheme.bodySmall,
             ),
           ],
