@@ -16,6 +16,7 @@ import '../../core/config/service_ports.dart';
 import '../../core/config/ui_preferences.dart';
 import '../../generated/l10n.dart';
 import '../../core/constants/scripts.dart';
+import '../../core/services/health_probe.dart';
 import '../../core/services/status_timeline.dart';
 import '../../core/utils/file_utils.dart';
 import '../routes/app_routes.dart';
@@ -461,6 +462,7 @@ class HomeController extends GetxController {
     // 这里重新读一次，守护才知道现在能不能自愈
     unawaited(refreshInitialPasswordAssistanceState());
     _checkAndNavigateToWebview();
+    unawaited(autoStartNapCatInstances());
   }
 
   void revealStartupLog() {
@@ -1572,6 +1574,14 @@ fi
     _loadNapCatInstances();
     _loadUiPreferences();
 
+    // 兜底：冷启动时 AstrBot 可能已由前台服务拉起（不经过启动流程），
+    // 这种情况也要把上次在跑的 NapCat 恢复起来。
+    Future<void>.delayed(const Duration(seconds: 25), () async {
+      if (!isAstrBotInstalled) return;
+      if (!await HealthProbe.isPortOpen(ServicePorts.dashboardPort)) return;
+      await autoStartNapCatInstances();
+    });
+
     // 为 Google Play 上架做准备
     // For Google Play
     Future.delayed(Duration.zero, () async {
@@ -1768,6 +1778,10 @@ fi
       'qqAutoDetected': instance['qqAutoDetected'] == true,
       'boundWebSocketName': instance['boundWebSocketName']?.toString() ?? '',
       'boundAdapterId': instance['boundAdapterId']?.toString() ?? '',
+      // 老数据没有该字段：只要配过账号就默认跟随启动，用户手动停一次即关掉
+      'autoStart': instance.containsKey('autoStart')
+          ? instance['autoStart'] == true
+          : instance['qq']?.toString().trim().isNotEmpty == true,
       'running': _napCatInstanceTerminals.containsKey(id),
     };
   }
@@ -1794,6 +1808,7 @@ fi
                 'qqAutoDetected': instance['qqAutoDetected'] ?? false,
                 'boundWebSocketName': instance['boundWebSocketName'] ?? '',
                 'boundAdapterId': instance['boundAdapterId'] ?? '',
+                'autoStart': instance['autoStart'] == true,
               })
           .toList(),
     );
@@ -2596,7 +2611,7 @@ fi
     _scheduleNapCatInstanceQqProbe(id, terminalName);
     final pty = createPTY();
     _napCatInstanceTerminals[id] = pty;
-    _updateNapCatInstance(id, {'running': true});
+    _updateNapCatInstance(id, {'running': true, 'autoStart': true});
 
     final subscription = pty.output
         .cast<List<int>>()
@@ -2635,6 +2650,99 @@ fi
 
     _napCatInstanceSubscriptions[id] = subscription;
     pty.writeString(_napCatInstanceCommand(id));
+  }
+
+  bool _autoStartNapCatBusy = false;
+
+  /// AstrBot 就绪后，把上次处于运行状态的 NapCat 实例自动拉起来。
+  /// 只对 autoStart=true 的实例生效：用户手动点过「停止」就不会再自启。
+  Future<void> autoStartNapCatInstances() async {
+    if (_autoStartNapCatBusy) {
+      Log.i('自启跳过：已有任务在执行', tag: 'NapCatAuto');
+      return;
+    }
+    if (!isAstrBotInstalled) {
+      Log.i('自启跳过：环境未安装', tag: 'NapCatAuto');
+      return;
+    }
+    final targets = napCatInstances
+        .where((instance) => instance['autoStart'] == true)
+        .map((instance) => instance['id']?.toString() ?? '')
+        .where((id) =>
+            id.isNotEmpty && !_napCatInstanceTerminals.containsKey(id))
+        .toList();
+    Log.i(
+      '自启检查：实例 ${napCatInstances.length} 个，'
+      'autoStart=${napCatInstances.where((e) => e['autoStart'] == true).length} 个，'
+      '目标 ${targets.length} 个，运行中 ${_napCatInstanceTerminals.keys.toList()}',
+      tag: 'NapCatAuto',
+    );
+    if (targets.isEmpty) return;
+
+    _autoStartNapCatBusy = true;
+    try {
+      // 等 ubuntu 会话 / common.sh 彻底就绪，避免刚 ready 就抢端口。
+      // 端口偶尔会比「就绪」晚几十毫秒才通，试几次再判失败，避免一次没通就永远不补。
+      var dashboardReady = false;
+      for (var attempt = 0; attempt < 5; attempt++) {
+        await Future<void>.delayed(
+          Duration(seconds: attempt == 0 ? 2 : 8),
+        );
+        dashboardReady =
+            await HealthProbe.isPortOpen(ServicePorts.dashboardPort);
+        if (dashboardReady) break;
+        Log.i(
+          '自启等待：AstrBot 面板尚未响应（第 ${attempt + 1} 次）',
+          tag: 'NapCatAuto',
+        );
+      }
+      if (!dashboardReady) {
+        unawaited(StatusTimeline.instance.record(
+          'NapCat',
+          'napcat_autostart_skipped',
+          'AstrBot 面板未响应，暂不启动 NapCat',
+          level: TimelineLevel.warning,
+          dedupe: false,
+        ));
+        return;
+      }
+      for (final id in targets) {
+        final instance =
+            napCatInstances.firstWhereOrNull((item) => item['id'] == id);
+        if (instance == null || instance['autoStart'] != true) continue;
+        final name = instance['name']?.toString() ?? id;
+        try {
+          final port = _parseInt(instance['webUiPort'], 0);
+          Log.i(
+            '自启 $name：端口 $port '
+            '${await _isPortAvailable(port) ? '空闲' : '被占用，先清理'}',
+            tag: 'NapCatAuto',
+          );
+          if (port > 0 && !await _isPortAvailable(port)) {
+            // 上次残留的 NapCat 进程还占着端口，先清掉再起
+            await _stopNapCatInstanceProcesses(id);
+            await Future<void>.delayed(const Duration(milliseconds: 800));
+          }
+          await startNapCatInstance(id);
+          unawaited(StatusTimeline.instance.record(
+            'NapCat',
+            'napcat_autostart',
+            '已自动启动 NapCat（$name）',
+            level: TimelineLevel.success,
+          ));
+        } catch (e) {
+          unawaited(StatusTimeline.instance.record(
+            'NapCat',
+            'napcat_autostart_failed',
+            '自动启动 NapCat 失败（$name）：$e',
+            level: TimelineLevel.error,
+            dedupe: false,
+          ));
+        }
+      }
+    } finally {
+      _autoStartNapCatBusy = false;
+    }
   }
 
   bool _looksLikeNapCatLoginStateEvent(String text) {
@@ -2823,7 +2931,7 @@ fi
     _napCatInstanceTerminals[id]?.kill();
     _napCatInstanceTerminals.remove(id);
     await _stopNapCatInstanceProcesses(id);
-    _updateNapCatInstance(id, {'running': false});
+    _updateNapCatInstance(id, {'running': false, 'autoStart': false});
   }
 
   Future<void> logoutNapCatInstance(String id) async {
@@ -2837,6 +2945,7 @@ fi
       'qqAutoDetected': false,
       'boundWebSocketName': '',
       'boundAdapterId': '',
+      'autoStart': false,
       'running': false,
     });
   }
