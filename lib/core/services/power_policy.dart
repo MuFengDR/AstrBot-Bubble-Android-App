@@ -68,8 +68,11 @@ class PowerPolicy {
   /// 主 isolate 探活间隔（秒）；0 表示关闭
   static int get probeIntervalSeconds => probeIntervalMinutes * 60;
 
-  /// 连续多少次探活失败才判定 AstrBot 掉线
-  static int get failureThreshold => 3;
+  /// 连续多少次探活失败才判定 AstrBot 掉线。
+  ///
+  /// 只要一次：探活间隔由用户自己定（默认 60 分钟），再乘 3 的话最慢要三小时
+  /// 才发现掉线，太慢。误判风险交给守卫里的二次复核兜着。
+  static int get failureThreshold => 1;
 
   /// 消息通知轮询间隔（秒）
   static int get messagePollSeconds => 30;

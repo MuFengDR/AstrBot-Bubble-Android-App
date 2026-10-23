@@ -175,6 +175,16 @@ class KeepAliveGuard {
 
   DateTime? _lastProbeAt;
 
+  /// 这一次掉线是否已经复核过了，避免每轮探活都复核一遍
+  bool _confirmedDown = false;
+  bool _reconfirming = false;
+
+  /// 判定掉线后、动手前的一次复核间隔。
+  ///
+  /// 阈值只有一次，单次失败可能只是 AstrBot 在重载或面板短暂忙，
+  /// 隔几秒再探一次，确认真的没响应才重启，别把正常的实例打断。
+  static const Duration reconfirmDelay = Duration(seconds: 8);
+
   void start({bool useTimer = true}) {
     _timer?.cancel();
     _timer = null;
@@ -251,6 +261,7 @@ class KeepAliveGuard {
         _level = 0;
         _healRounds = 0;
         _nextHealAt = null;
+        _confirmedDown = false;
         _installSkipLogged = false;
         _everReady = true;
         _lastSuccessAt = DateTime.now();
@@ -293,6 +304,10 @@ class KeepAliveGuard {
         }
         return;
       }
+      // 只失败一次就判定掉线，动手前先复核，避免瞬时抖动被当成真掉线
+      if (!_confirmedDown && !await _reconfirmDown()) return;
+      _confirmedDown = true;
+
       await _escalate();
     } catch (e) {
       if (!probeOnly) {
@@ -305,6 +320,43 @@ class KeepAliveGuard {
       }
     } finally {
       _busy = false;
+    }
+  }
+
+  /// 掉线复核：隔 [reconfirmDelay] 再探一次。
+  ///
+  /// 返回 true 表示确实没响应（可以自愈），false 表示刚才是抖动。
+  Future<bool> _reconfirmDown() async {
+    if (_reconfirming) return false;
+    _reconfirming = true;
+    try {
+      await Future<void>.delayed(reconfirmDelay);
+      final result = await HealthProbe.probePort(config.dashboardPort);
+      if (result.open) {
+        _failures = 0;
+        _wasDown = false;
+        await StatusTimeline.instance.record(
+          'guard',
+          'probe_flaky',
+          '探活抖了一下，复核已恢复响应（${result.latencyMs}ms），不重启',
+          level: TimelineLevel.info,
+          dedupe: false,
+        );
+        return false;
+      }
+      await StatusTimeline.instance.record(
+        'guard',
+        'probe_confirmed',
+        '复核仍然无响应，判定 AstrBot 掉线',
+        level: TimelineLevel.warning,
+        dedupe: false,
+      );
+      return true;
+    } catch (_) {
+      // 复核本身异常也按没响应处理，交给自愈
+      return true;
+    } finally {
+      _reconfirming = false;
     }
   }
 
@@ -345,7 +397,8 @@ class KeepAliveGuard {
     }
     _installSkipLogged = false;
 
-    _lastHealAt = now;
+    // 复核花了 8 秒，冷却从真正动手这一刻算
+    _lastHealAt = DateTime.now();
 
     var next = _level + 1;
     // 本次会话从没就绪过（首次安装、正在初始化）：停在第一级。
@@ -367,7 +420,7 @@ class KeepAliveGuard {
       await StatusTimeline.instance.record(
         'guard',
         'heal_level1',
-        '连续 $_failures 次探活失败，正在重启 AstrBot 进程',
+        '探活无响应（连续 $_failures 次），复核后仍未恢复，正在重启 AstrBot 进程',
         level: TimelineLevel.warning,
         dedupe: false,
       );
@@ -398,6 +451,7 @@ class KeepAliveGuard {
     // 交给下一轮探活重新判断，避免死循环
     _level = 0;
     _failures = 0;
+    _confirmedDown = false;
 
     // 指数退避：2 分钟起，最长 30 分钟，成功恢复后清零
     _healRounds++;
@@ -429,7 +483,11 @@ class KeepAliveGuard {
     final gate = canHeal;
     if (gate != null && !gate()) return;
 
-    _lastHealAt = now;
+    // 后台实例是「一次失败就上报」，主 isolate 这边也复核一遍再动手
+    if (!await _reconfirmDown()) return;
+
+    // 复核花了 8 秒，冷却从真正动手这一刻算
+    _lastHealAt = DateTime.now();
     await StatusTimeline.instance.record(
       'guard',
       'heal_external_${stage.name}',
