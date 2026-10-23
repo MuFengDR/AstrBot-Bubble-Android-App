@@ -16,6 +16,7 @@ import '../../core/config/service_ports.dart';
 import '../../core/config/ui_preferences.dart';
 import '../../generated/l10n.dart';
 import '../../core/constants/scripts.dart';
+import '../../core/services/status_timeline.dart';
 import '../../core/utils/file_utils.dart';
 import '../routes/app_routes.dart';
 import 'terminal_tab_manager.dart';
@@ -422,6 +423,12 @@ class HomeController extends GetxController {
     isAstrBotRunning.value = true;
     showStartupProgress = false;
     update();
+    unawaited(StatusTimeline.instance.record(
+      'astrbot',
+      'astrbot_ready',
+      'AstrBot 已就绪，面板端口 ${_runningAstrBotDashboardPort ?? ServicePorts.dashboardPort}',
+      level: TimelineLevel.success,
+    ));
     _checkAndNavigateToWebview();
   }
 
@@ -615,6 +622,12 @@ class HomeController extends GetxController {
 
         // 标记二维码处理完成
         _markStartupReady(qrcodeProcessed: true);
+        unawaited(StatusTimeline.instance.record(
+          'napcat',
+          'napcat_login',
+          'NapCat 账号已登录',
+          level: TimelineLevel.success,
+        ));
 
         // 取消订阅，后续不再监听任何指令
         await _qrcodeSubscription?.cancel();
@@ -648,6 +661,13 @@ class HomeController extends GetxController {
           colorText: Colors.white,
           duration: const Duration(seconds: 5),
         );
+
+        unawaited(StatusTimeline.instance.record(
+          'napcat',
+          'napcat_login_failed',
+          'NapCat 登录失败：$errorMsg',
+          level: TimelineLevel.error,
+        ));
 
         // 不取消订阅，允许用户重新扫码
       }

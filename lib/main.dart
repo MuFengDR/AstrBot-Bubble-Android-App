@@ -9,6 +9,7 @@ import 'dart:async';
 
 import 'generated/l10n.dart';
 import 'core/services/foreground_service.dart';
+import 'core/services/status_timeline.dart';
 import 'ui/routes/app_routes.dart';
 
 // Notice: behavior will submit Device
@@ -62,6 +63,18 @@ class _AstrBotState extends State<AstrBot> with WidgetsBindingObserver {
 
     // 启动服务状态监听器，定期检查服务是否运行
     _startServiceMonitor();
+    _initTimeline();
+  }
+
+  /// 初始化状态时间线，并记录本次启动
+  void _initTimeline() {
+    unawaited(StatusTimeline.instance.ensureLoaded().then((_) {
+      unawaited(StatusTimeline.instance.record(
+        'app',
+        'app_start',
+        '应用已启动',
+      ));
+    }));
   }
 
   /// 启动服务状态监听器
@@ -79,6 +92,12 @@ class _AstrBotState extends State<AstrBot> with WidgetsBindingObserver {
         try {
           await ForegroundServiceManager.startService();
           Log.i('服务重启成功', tag: 'AstrBot');
+          await StatusTimeline.instance.record(
+            'service',
+            'service_restarted',
+            '后台服务未运行，已自动拉起',
+            level: TimelineLevel.warning,
+          );
         } catch (e) {
           Log.e('服务重启失败: $e', tag: 'AstrBot');
         }

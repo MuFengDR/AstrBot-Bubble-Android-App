@@ -940,7 +940,8 @@ class _LauncherPageState extends State<LauncherPage>
                           ? null
                           : _refreshEnvironmentStatus,
                       stage: homeController.initialEnvironmentStage.value,
-                      progress: homeController.initialEnvironmentProgress.value,
+                      progress:
+                          homeController.initialEnvironmentProgress.value,
                     ),
             ),
           ],

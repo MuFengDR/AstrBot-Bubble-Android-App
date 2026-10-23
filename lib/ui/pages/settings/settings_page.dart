@@ -18,6 +18,7 @@ import '../../../core/services/password_manager.dart';
 import '../../../core/config/app_config.dart';
 import '../../../core/config/environment_config.dart';
 import '../../widgets/diagnostic_dialog.dart';
+import '../timeline/status_timeline_page.dart';
 
 class SettingsPage extends StatefulWidget {
   final WebViewController astrBotController;
@@ -1606,6 +1607,29 @@ class _SettingsPageState extends State<SettingsPage> {
                 );
               }
             }
+          },
+        ),
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+          child: Text(
+            '运行守护',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: Colors.grey,
+            ),
+          ),
+        ),
+        ListTile(
+          leading: const Icon(Icons.timeline),
+          title: const Text('状态时间线'),
+          subtitle: const Text('探活、自愈、备份和通知的完整记录'),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const StatusTimelinePage(),
+              ),
+            );
           },
         ),
         const Padding(
