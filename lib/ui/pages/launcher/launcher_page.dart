@@ -13,8 +13,6 @@ import '../../../core/config/service_ports.dart';
 import '../../../core/constants/scripts.dart' as scripts;
 import '../../controllers/terminal_controller.dart';
 import '../../widgets/glass_panel.dart';
-import '../../widgets/runtime_status_card.dart';
-import '../timeline/status_timeline_page.dart';
 
 class LauncherPage extends StatefulWidget {
   final ValueChanged<int>? onNavigate;
@@ -116,12 +114,6 @@ class _LauncherPageState extends State<LauncherPage>
     } catch (e) {
       _showSnack('停止失败：$e');
     }
-  }
-
-  void _openTimeline() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => const StatusTimelinePage()),
-    );
   }
 
   Future<void> _copyAstrBotInitialPassword() async {
@@ -928,11 +920,6 @@ class _LauncherPageState extends State<LauncherPage>
                       padding: const EdgeInsets.fromLTRB(16, 8, 16, 104),
                       children: [
                         _buildQuickStartCard(context),
-                        const SizedBox(height: 12),
-                        RuntimeStatusCard(
-                          controller: homeController,
-                          onOpenTimeline: _openTimeline,
-                        ),
                         const SizedBox(height: 12),
                         _buildNapCatAccountsCard(context),
                         const SizedBox(height: 12),
