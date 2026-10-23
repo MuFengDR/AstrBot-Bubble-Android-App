@@ -14,10 +14,16 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:file_picker/file_picker.dart';
 import '../../controllers/terminal_controller.dart';
 import '../../../core/constants/scripts.dart' as scripts;
+import '../../../core/services/foreground_service.dart';
+import '../../../core/services/message_bridge.dart';
+import '../../../core/services/power_policy.dart';
 import '../../../core/services/password_manager.dart';
+import '../../../core/services/status_timeline.dart';
 import '../../../core/config/app_config.dart';
 import '../../../core/config/environment_config.dart';
 import '../../widgets/diagnostic_dialog.dart';
+import '../backup/backup_page.dart';
+import '../timeline/status_timeline_page.dart';
 
 class SettingsPage extends StatefulWidget {
   final WebViewController astrBotController;
@@ -1032,6 +1038,57 @@ class _SettingsPageState extends State<SettingsPage> {
     _disposeTextControllersSafely([commandController]);
   }
 
+  // 选择省电策略
+  // Pick the power saving profile
+  Future<void> _showPowerModeDialog() async {
+    var current = PowerPolicy.mode;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('省电策略'),
+          contentPadding: const EdgeInsets.symmetric(vertical: 12),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final mode in PowerMode.values)
+                RadioListTile<PowerMode>(
+                  value: mode,
+                  groupValue: current,
+                  title: Text(PowerPolicy.label(mode)),
+                  subtitle: Text(PowerPolicy.description(mode)),
+                  onChanged: (value) async {
+                    if (value == null) return;
+                    await PowerPolicy.setMode(value);
+                    await ForegroundServiceManager.applyPowerPolicy();
+                    setDialogState(() => current = value);
+                    if (mounted) setState(() {});
+                  },
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('关闭'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 开关消息通知桥
+  Future<void> _toggleNotifyBridge(bool value) async {
+    await PowerPolicy.setNotifyBridgeEnabled(value);
+    if (value) {
+      await MessageBridge.instance.start();
+    } else {
+      MessageBridge.instance.stop();
+    }
+    if (mounted) setState(() {});
+  }
+
   // 打开文件管理器并导航到 AstrBot Ubuntu 文件系统位置
   Future<void> _openFileManager() async {
     try {
@@ -1607,6 +1664,67 @@ class _SettingsPageState extends State<SettingsPage> {
               }
             }
           },
+        ),
+        ListTile(
+          leading: const Icon(Icons.swap_horiz),
+          title: const Text('备份与迁移（完整）'),
+          subtitle: const Text('含 NapCat 配置与应用设置，支持导入导出和失败回滚'),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const BackupPage()),
+            );
+          },
+        ),
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+          child: Text(
+            '运行守护',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: Colors.grey,
+            ),
+          ),
+        ),
+        ListTile(
+          leading: const Icon(Icons.timeline),
+          title: const Text('状态时间线'),
+          subtitle: const Text('探活、自愈、备份和通知的完整记录'),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const StatusTimelinePage(),
+              ),
+            );
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.battery_saver_outlined),
+          title: const Text('省电策略'),
+          subtitle: Text(PowerPolicy.label(PowerPolicy.mode)),
+          onTap: _showPowerModeDialog,
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.auto_fix_high),
+          title: const Text('断线自动恢复'),
+          subtitle: const Text('AstrBot 无响应时按级别重启进程、环境或服务'),
+          value: PowerPolicy.autoHealEnabled,
+          onChanged: (value) async {
+            await PowerPolicy.setAutoHealEnabled(value);
+            await StatusTimeline.instance.record(
+              'settings',
+              'auto_heal_changed',
+              value ? '已开启断线自动恢复' : '已关闭断线自动恢复',
+            );
+            if (mounted) setState(() {});
+          },
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.notifications_active_outlined),
+          title: const Text('消息通知桥'),
+          subtitle: const Text('把 AstrBot 的新消息和报错转成系统通知'),
+          value: PowerPolicy.notifyBridgeEnabled,
+          onChanged: _toggleNotifyBridge,
         ),
         const Padding(
           padding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),

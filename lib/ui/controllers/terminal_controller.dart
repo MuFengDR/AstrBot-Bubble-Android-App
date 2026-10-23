@@ -16,6 +16,8 @@ import '../../core/config/service_ports.dart';
 import '../../core/config/ui_preferences.dart';
 import '../../generated/l10n.dart';
 import '../../core/constants/scripts.dart';
+import '../../core/services/health_probe.dart';
+import '../../core/services/status_timeline.dart';
 import '../../core/utils/file_utils.dart';
 import '../routes/app_routes.dart';
 import 'terminal_tab_manager.dart';
@@ -422,7 +424,14 @@ class HomeController extends GetxController {
     isAstrBotRunning.value = true;
     showStartupProgress = false;
     update();
+    unawaited(StatusTimeline.instance.record(
+      'astrbot',
+      'astrbot_ready',
+      'AstrBot 已就绪，面板端口 ${_runningAstrBotDashboardPort ?? ServicePorts.dashboardPort}',
+      level: TimelineLevel.success,
+    ));
     _checkAndNavigateToWebview();
+    unawaited(autoStartNapCatInstances());
   }
 
   void revealStartupLog() {
@@ -615,6 +624,12 @@ class HomeController extends GetxController {
 
         // 标记二维码处理完成
         _markStartupReady(qrcodeProcessed: true);
+        unawaited(StatusTimeline.instance.record(
+          'napcat',
+          'napcat_login',
+          'NapCat 账号已登录',
+          level: TimelineLevel.success,
+        ));
 
         // 取消订阅，后续不再监听任何指令
         await _qrcodeSubscription?.cancel();
@@ -648,6 +663,13 @@ class HomeController extends GetxController {
           colorText: Colors.white,
           duration: const Duration(seconds: 5),
         );
+
+        unawaited(StatusTimeline.instance.record(
+          'napcat',
+          'napcat_login_failed',
+          'NapCat 登录失败：$errorMsg',
+          level: TimelineLevel.error,
+        ));
 
         // 不取消订阅，允许用户重新扫码
       }
@@ -774,8 +796,16 @@ class HomeController extends GetxController {
           link.createSync('${RuntimeEnvir.binPath}/busybox');
         }
       }
-      Link link = Link('${RuntimeEnvir.binPath}/file');
-      link.createSync('/system/bin/file');
+      // file 命令不是 busybox 提供的，单独链到系统实现；
+      // 这个链接第二次启动时一定已存在，不能无条件 create（会抛 PathExistsException）
+      final fileLink = Link('${RuntimeEnvir.binPath}/file');
+      if (!fileLink.existsSync()) {
+        try {
+          fileLink.createSync('/system/bin/file');
+        } catch (e) {
+          Log.e('Create file link failed -> $e');
+        }
+      }
     } catch (e) {
       Log.e('Create link failed -> $e');
     }
@@ -904,6 +934,12 @@ class HomeController extends GetxController {
       webviewHasOpen = false;
       isAstrBotRunning.value = false;
       _writeTerminal('\r\n[AstrBot] 已停止\r\n');
+      unawaited(StatusTimeline.instance.record(
+        'astrbot',
+        'astrbot_stopped',
+        'AstrBot 已停止',
+        level: TimelineLevel.warning,
+      ));
     } catch (e) {
       _writeTerminal('\r\n[AstrBot] 停止失败: $e\r\n');
       rethrow;
@@ -917,6 +953,54 @@ class HomeController extends GetxController {
       File('$ubuntuPath/root/AstrBot/pyproject.toml').existsSync() &&
       Directory('$ubuntuPath/root/AstrBot/.venv').existsSync() &&
       File('$ubuntuPath/root/.local/bin/uv').existsSync();
+
+  /// 自愈第一级：只重启 AstrBot 进程，不动 proot 环境
+  Future<void> healRestartAstrBot() async {
+    if (isAstrBotStarting.value || isAstrBotStopping.value) {
+      Log.i('自愈重启被跳过：当前正在启动或停止', tag: 'AstrBot');
+      return;
+    }
+    await StatusTimeline.instance.record(
+      'astrbot',
+      'heal_restart',
+      '自愈：重新拉起 AstrBot 进程',
+      level: TimelineLevel.warning,
+    );
+    try {
+      if (isAstrBotRunning.value) {
+        await stopAstrBot();
+      }
+      await loadAstrBot();
+    } catch (e) {
+      await StatusTimeline.instance.record(
+        'astrbot',
+        'heal_restart_failed',
+        '自愈重启失败：$e',
+        level: TimelineLevel.error,
+        dedupe: false,
+      );
+      rethrow;
+    }
+  }
+
+  /// 自愈第二级：连 PTY 一起重建
+  Future<void> healRestartEnvironment() async {
+    if (isAstrBotStarting.value || isAstrBotStopping.value) return;
+    await StatusTimeline.instance.record(
+      'astrbot',
+      'heal_environment',
+      '自愈：重建运行环境（PTY 与 bin 链接）',
+      level: TimelineLevel.error,
+    );
+    try {
+      pseudoTerminal?.kill(ProcessSignal.sigkill);
+    } catch (_) {}
+    pseudoTerminal = null;
+    napcatTerminal = null;
+    isAstrBotRunning.value = false;
+    isAstrBotStarting.value = false;
+    await loadAstrBot();
+  }
 
   Future<void> _terminateAstrBotProcessTree({
     int? rootPtyPid,
@@ -1455,6 +1539,14 @@ fi
     _loadNapCatInstances();
     _loadUiPreferences();
 
+    // 兜底：冷启动时 AstrBot 可能已由前台服务拉起（不经过启动流程），
+    // 这种情况也要把上次在跑的 NapCat 恢复起来。
+    Future<void>.delayed(const Duration(seconds: 25), () async {
+      if (!isAstrBotInstalled) return;
+      if (!await HealthProbe.isPortOpen(ServicePorts.dashboardPort)) return;
+      await autoStartNapCatInstances();
+    });
+
     // 为 Google Play 上架做准备
     // For Google Play
     Future.delayed(Duration.zero, () async {
@@ -1651,6 +1743,10 @@ fi
       'qqAutoDetected': instance['qqAutoDetected'] == true,
       'boundWebSocketName': instance['boundWebSocketName']?.toString() ?? '',
       'boundAdapterId': instance['boundAdapterId']?.toString() ?? '',
+      // 老数据没有该字段：只要配过账号就默认跟随启动，用户手动停一次即关掉
+      'autoStart': instance.containsKey('autoStart')
+          ? instance['autoStart'] == true
+          : instance['qq']?.toString().trim().isNotEmpty == true,
       'running': _napCatInstanceTerminals.containsKey(id),
     };
   }
@@ -1677,6 +1773,7 @@ fi
                 'qqAutoDetected': instance['qqAutoDetected'] ?? false,
                 'boundWebSocketName': instance['boundWebSocketName'] ?? '',
                 'boundAdapterId': instance['boundAdapterId'] ?? '',
+                'autoStart': instance['autoStart'] == true,
               })
           .toList(),
     );
@@ -2479,7 +2576,7 @@ fi
     _scheduleNapCatInstanceQqProbe(id, terminalName);
     final pty = createPTY();
     _napCatInstanceTerminals[id] = pty;
-    _updateNapCatInstance(id, {'running': true});
+    _updateNapCatInstance(id, {'running': true, 'autoStart': true});
 
     final subscription = pty.output
         .cast<List<int>>()
@@ -2518,6 +2615,61 @@ fi
 
     _napCatInstanceSubscriptions[id] = subscription;
     pty.writeString(_napCatInstanceCommand(id));
+  }
+
+  bool _autoStartNapCatBusy = false;
+
+  /// AstrBot 就绪后，把上次处于运行状态的 NapCat 实例自动拉起来。
+  /// 只对 autoStart=true 的实例生效：用户手动点过「停止」就不会再自启。
+  Future<void> autoStartNapCatInstances() async {
+    if (_autoStartNapCatBusy) return;
+    if (!isAstrBotInstalled) return;
+    final targets = napCatInstances
+        .where((instance) => instance['autoStart'] == true)
+        .map((instance) => instance['id']?.toString() ?? '')
+        .where((id) =>
+            id.isNotEmpty && !_napCatInstanceTerminals.containsKey(id))
+        .toList();
+    if (targets.isEmpty) return;
+
+    _autoStartNapCatBusy = true;
+    try {
+      // 等 ubuntu 会话 / common.sh 彻底就绪，避免刚 ready 就抢端口
+      await Future<void>.delayed(const Duration(seconds: 2));
+      for (final id in targets) {
+        // AstrBot 没在响应就别忙起 NapCat，等它自愈完再说
+        if (!await HealthProbe.isPortOpen(ServicePorts.dashboardPort)) break;
+        final instance =
+            napCatInstances.firstWhereOrNull((item) => item['id'] == id);
+        if (instance == null || instance['autoStart'] != true) continue;
+        final name = instance['name']?.toString() ?? id;
+        try {
+          final port = _parseInt(instance['webUiPort'], 0);
+          if (port > 0 && !await _isPortAvailable(port)) {
+            // 上次残留的 NapCat 进程还占着端口，先清掉再起
+            await _stopNapCatInstanceProcesses(id);
+            await Future<void>.delayed(const Duration(milliseconds: 800));
+          }
+          await startNapCatInstance(id);
+          unawaited(StatusTimeline.instance.record(
+            'NapCat',
+            'napcat_autostart',
+            '已自动启动 NapCat（$name）',
+            level: TimelineLevel.success,
+          ));
+        } catch (e) {
+          unawaited(StatusTimeline.instance.record(
+            'NapCat',
+            'napcat_autostart_failed',
+            '自动启动 NapCat 失败（$name）：$e',
+            level: TimelineLevel.error,
+            dedupe: false,
+          ));
+        }
+      }
+    } finally {
+      _autoStartNapCatBusy = false;
+    }
   }
 
   bool _looksLikeNapCatLoginStateEvent(String text) {
@@ -2706,7 +2858,7 @@ fi
     _napCatInstanceTerminals[id]?.kill();
     _napCatInstanceTerminals.remove(id);
     await _stopNapCatInstanceProcesses(id);
-    _updateNapCatInstance(id, {'running': false});
+    _updateNapCatInstance(id, {'running': false, 'autoStart': false});
   }
 
   Future<void> logoutNapCatInstance(String id) async {
@@ -2720,6 +2872,7 @@ fi
       'qqAutoDetected': false,
       'boundWebSocketName': '',
       'boundAdapterId': '',
+      'autoStart': false,
       'running': false,
     });
   }

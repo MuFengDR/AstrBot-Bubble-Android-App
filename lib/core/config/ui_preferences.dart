@@ -16,6 +16,10 @@ class UiPreferences {
   static SettingNode get _showTerminalShortcutBar =>
       'show_terminal_shortcut_bar'.setting;
   static SettingNode get _webUiZoomLevels => 'web_ui_zoom_levels'.setting;
+  static SettingNode get _autoBackupEnabled => 'auto_backup_enabled'.setting;
+  static SettingNode get _autoBackupIntervalHours =>
+      'auto_backup_interval_hours'.setting;
+  static SettingNode get _autoBackupKeep => 'auto_backup_keep'.setting;
 
   static String get homeBackgroundPath =>
       _homeBackgroundPath.get()?.toString() ?? '';
@@ -32,6 +36,36 @@ class UiPreferences {
       _readDouble(_terminalFontSize, 13.0).clamp(10.0, 22.0).toDouble();
   static bool get showTerminalShortcutBar =>
       _readBool(_showTerminalShortcutBar, true);
+
+  /// 自动备份：默认开启，每 24 小时一份，保留最近 5 份
+  static bool get autoBackupEnabled => _readBool(_autoBackupEnabled, true);
+
+  static int get autoBackupIntervalHours {
+    final value = _autoBackupIntervalHours.get();
+    final hours = value is num
+        ? value.toInt()
+        : int.tryParse(value?.toString() ?? '');
+    return (hours ?? 24).clamp(1, 168);
+  }
+
+  static int get autoBackupKeep {
+    final value = _autoBackupKeep.get();
+    final count =
+        value is num ? value.toInt() : int.tryParse(value?.toString() ?? '');
+    return (count ?? 5).clamp(1, 30);
+  }
+
+  static void saveAutoBackupEnabled(bool value) {
+    _autoBackupEnabled.set(value);
+  }
+
+  static void saveAutoBackupIntervalHours(int hours) {
+    _autoBackupIntervalHours.set(hours.clamp(1, 168));
+  }
+
+  static void saveAutoBackupKeep(int count) {
+    _autoBackupKeep.set(count.clamp(1, 30));
+  }
   static Map<String, int> get webUiZoomLevels {
     final value = _webUiZoomLevels.get();
     if (value == null) return {};
