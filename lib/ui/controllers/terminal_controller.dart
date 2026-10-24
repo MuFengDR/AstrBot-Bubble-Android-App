@@ -16,6 +16,7 @@ import '../../core/config/service_ports.dart';
 import '../../core/config/ui_preferences.dart';
 import '../../generated/l10n.dart';
 import '../../core/constants/scripts.dart';
+import '../../core/services/status_timeline.dart';
 import '../../core/utils/file_utils.dart';
 import '../routes/app_routes.dart';
 import 'terminal_tab_manager.dart';
@@ -117,6 +118,30 @@ class HomeController extends GetxController {
   final RxBool isOpenCodeRunning = false.obs;
   final RxBool isOpenCodeInstalled = false.obs;
   final RxBool initialPasswordAssistanceCompleted = false.obs;
+
+  /// AstrBot 自己记录的「还得改掉初始密码」标记。
+  ///
+  /// AstrBot 4.x 首次启动会生成随机密码并把 password_change_required
+  /// 写成 true，用户改完才变 false。它比应用侧的「首配完成」更贴近
+  /// 真实状态，守护靠它让路。
+  final RxBool dashboardPasswordChangeRequired = false.obs;
+  DateTime? _passwordPendingSince;
+
+  /// 首次改密码的窗口期。
+  ///
+  /// 用户这时正在 WebUI 里操作，面板也可能短暂不可用，自愈重启会
+  /// 把他打断，所以先让路；超过 [firstRunPasswordGrace] 之后恢复
+  /// 正常自愈，免得用户一直不改密码导致守护永久失效。
+  static const Duration firstRunPasswordGrace = Duration(minutes: 60);
+
+  bool get firstRunPasswordPending {
+    if (!dashboardPasswordChangeRequired.value) {
+      _passwordPendingSince = null;
+      return false;
+    }
+    final since = _passwordPendingSince ??= DateTime.now();
+    return DateTime.now().difference(since) < firstRunPasswordGrace;
+  }
   final RxString homeBackgroundPath = ''.obs;
   final RxDouble cardGlassOpacity = 0.62.obs;
   final RxDouble glassBlurAmount = 0.45.obs;
@@ -206,6 +231,7 @@ class HomeController extends GetxController {
     if (!isAstrBotInstalled) {
       _currentAstrBotJwtSecret = null;
       initialPasswordAssistanceCompleted.value = false;
+      dashboardPasswordChangeRequired.value = false;
       _clearInitialCredentials();
       return;
     }
@@ -214,12 +240,15 @@ class HomeController extends GetxController {
     if (dashboard == null) {
       _currentAstrBotJwtSecret = null;
       initialPasswordAssistanceCompleted.value = false;
+      dashboardPasswordChangeRequired.value = false;
       return;
     }
 
     final jwtSecret = dashboard['jwt_secret']?.toString() ?? '';
     _currentAstrBotJwtSecret = jwtSecret.isEmpty ? null : jwtSecret;
     final passwordChangeRequired = dashboard['password_change_required'];
+    // AstrBot 自己还没改掉初始密码：守护据此让路
+    dashboardPasswordChangeRequired.value = passwordChangeRequired == true;
     final username = dashboard['username']?.toString() ?? '';
     final legacyPasswordHash =
         dashboard['password']?.toString().toLowerCase() ?? '';
@@ -422,6 +451,15 @@ class HomeController extends GetxController {
     isAstrBotRunning.value = true;
     showStartupProgress = false;
     update();
+    unawaited(StatusTimeline.instance.record(
+      'astrbot',
+      'astrbot_ready',
+      'AstrBot 已就绪，面板端口 ${_runningAstrBotDashboardPort ?? ServicePorts.dashboardPort}',
+      level: TimelineLevel.success,
+    ));
+    // AstrBot 启动时才会写出 password_change_required 这类状态，
+    // 这里重新读一次，守护才知道现在能不能自愈
+    unawaited(refreshInitialPasswordAssistanceState());
     _checkAndNavigateToWebview();
   }
 
@@ -615,6 +653,12 @@ class HomeController extends GetxController {
 
         // 标记二维码处理完成
         _markStartupReady(qrcodeProcessed: true);
+        unawaited(StatusTimeline.instance.record(
+          'napcat',
+          'napcat_login',
+          'NapCat 账号已登录',
+          level: TimelineLevel.success,
+        ));
 
         // 取消订阅，后续不再监听任何指令
         await _qrcodeSubscription?.cancel();
@@ -648,6 +692,13 @@ class HomeController extends GetxController {
           colorText: Colors.white,
           duration: const Duration(seconds: 5),
         );
+
+        unawaited(StatusTimeline.instance.record(
+          'napcat',
+          'napcat_login_failed',
+          'NapCat 登录失败：$errorMsg',
+          level: TimelineLevel.error,
+        ));
 
         // 不取消订阅，允许用户重新扫码
       }
@@ -774,8 +825,16 @@ class HomeController extends GetxController {
           link.createSync('${RuntimeEnvir.binPath}/busybox');
         }
       }
-      Link link = Link('${RuntimeEnvir.binPath}/file');
-      link.createSync('/system/bin/file');
+      // file 命令不是 busybox 提供的，单独链到系统实现；
+      // 这个链接第二次启动时一定已存在，不能无条件 create（会抛 PathExistsException）
+      final fileLink = Link('${RuntimeEnvir.binPath}/file');
+      if (!fileLink.existsSync()) {
+        try {
+          fileLink.createSync('/system/bin/file');
+        } catch (e) {
+          Log.e('Create file link failed -> $e');
+        }
+      }
     } catch (e) {
       Log.e('Create link failed -> $e');
     }
@@ -788,6 +847,8 @@ class HomeController extends GetxController {
 
   Future<void> loadAstrBot() async {
     if (isAstrBotStarting.value || isAstrBotRunning.value) return;
+    // 用户主动启动（或自愈重启）都算「希望它在跑」，清掉手动停止的标记
+    UiPreferences.saveAstrBotUserStopped(false);
     isAstrBotStarting.value = true;
     isAstrBotRunning.value = false;
     showStartupProgress = true;
@@ -903,7 +964,15 @@ class HomeController extends GetxController {
       _isQrcodeProcessed = false;
       webviewHasOpen = false;
       isAstrBotRunning.value = false;
+      // 记下「是用户自己停的」，否则几十秒后自愈会把它当成掉线拉起来
+      UiPreferences.saveAstrBotUserStopped(true);
       _writeTerminal('\r\n[AstrBot] 已停止\r\n');
+      unawaited(StatusTimeline.instance.record(
+        'astrbot',
+        'astrbot_stopped',
+        'AstrBot 已停止，自动恢复已暂停（需手动启动）',
+        level: TimelineLevel.warning,
+      ));
     } catch (e) {
       _writeTerminal('\r\n[AstrBot] 停止失败: $e\r\n');
       rethrow;
@@ -917,6 +986,54 @@ class HomeController extends GetxController {
       File('$ubuntuPath/root/AstrBot/pyproject.toml').existsSync() &&
       Directory('$ubuntuPath/root/AstrBot/.venv').existsSync() &&
       File('$ubuntuPath/root/.local/bin/uv').existsSync();
+
+  /// 自愈第一级：只重启 AstrBot 进程，不动 proot 环境
+  Future<void> healRestartAstrBot() async {
+    if (isAstrBotStarting.value || isAstrBotStopping.value) {
+      Log.i('自愈重启被跳过：当前正在启动或停止', tag: 'AstrBot');
+      return;
+    }
+    await StatusTimeline.instance.record(
+      'astrbot',
+      'heal_restart',
+      '自愈：重新拉起 AstrBot 进程',
+      level: TimelineLevel.warning,
+    );
+    try {
+      if (isAstrBotRunning.value) {
+        await stopAstrBot();
+      }
+      await loadAstrBot();
+    } catch (e) {
+      await StatusTimeline.instance.record(
+        'astrbot',
+        'heal_restart_failed',
+        '自愈重启失败：$e',
+        level: TimelineLevel.error,
+        dedupe: false,
+      );
+      rethrow;
+    }
+  }
+
+  /// 自愈第二级：连 PTY 一起重建
+  Future<void> healRestartEnvironment() async {
+    if (isAstrBotStarting.value || isAstrBotStopping.value) return;
+    await StatusTimeline.instance.record(
+      'astrbot',
+      'heal_environment',
+      '自愈：重建运行环境（PTY 与 bin 链接）',
+      level: TimelineLevel.error,
+    );
+    try {
+      pseudoTerminal?.kill(ProcessSignal.sigkill);
+    } catch (_) {}
+    pseudoTerminal = null;
+    napcatTerminal = null;
+    isAstrBotRunning.value = false;
+    isAstrBotStarting.value = false;
+    await loadAstrBot();
+  }
 
   Future<void> _terminateAstrBotProcessTree({
     int? rootPtyPid,
