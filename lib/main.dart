@@ -103,7 +103,32 @@ class _AstrBotState extends State<AstrBot> with WidgetsBindingObserver {
             controller.isAstrBotStopping.value) {
           return false;
         }
-        return controller.initialPasswordAssistanceCompleted.value;
+        // AstrBot 自己说「还没改掉初始密码」：用户很可能正在 WebUI 里改，
+        // 这时候重启就是打断他——朋友踩的就是这个坑
+        if (controller.firstRunPasswordPending) return false;
+        return true;
+      })
+      ..healBlockReason = (() {
+        final controller = _findController();
+        if (controller == null) return '当前不满足自愈条件（界面未就绪），已跳过';
+        if (UiPreferences.astrBotUserStopped) {
+          return '主人手动停止了 AstrBot，暂不自愈';
+        }
+        if (!controller.isAstrBotInstalled) {
+          return 'AstrBot 还没安装，暂不自愈';
+        }
+        if (controller.firstRunPasswordPending) {
+          return '还在首次配置（初始密码未修改），不自愈也不重启，先让主人改完';
+        }
+        return '当前不满足自愈条件，已跳过';
+      })
+      // 没装、手动停止时连探活都停掉，否则会写出一串「判定掉线」
+      ..canProbe = (() {
+        final controller = _findController();
+        if (controller == null) return false;
+        if (!controller.isAstrBotInstalled) return false;
+        if (UiPreferences.astrBotUserStopped) return false;
+        return true;
       })
       ..start();
   }
@@ -198,6 +223,11 @@ class _AstrBotState extends State<AstrBot> with WidgetsBindingObserver {
         Timer.periodic(const Duration(seconds: 30), (timer) async {
       final isRunning = await ForegroundServiceManager.isRunningService();
       final userClickedStop = ForegroundServiceManager.userClickedStopButton;
+
+      // 顺手重读一次面板配置：「还没改初始密码」这个标记是 AstrBot
+      // 自己改的，守护得跟上，否则改完之后会一直让路
+      unawaited(_findController()?.refreshInitialPasswordAssistanceState() ??
+          Future<void>.value());
 
       // 只有在服务未运行且用户没有点击停止按钮的情况下才重启
       // 这样即使用户从通知栏划掉通知，服务也会被重建

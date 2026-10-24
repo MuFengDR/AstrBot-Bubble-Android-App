@@ -118,6 +118,30 @@ class HomeController extends GetxController {
   final RxBool isOpenCodeRunning = false.obs;
   final RxBool isOpenCodeInstalled = false.obs;
   final RxBool initialPasswordAssistanceCompleted = false.obs;
+
+  /// AstrBot 自己记录的「还得改掉初始密码」标记。
+  ///
+  /// AstrBot 4.x 首次启动会生成随机密码并把 password_change_required
+  /// 写成 true，用户改完才变 false。它比应用侧的「首配完成」更贴近
+  /// 真实状态，守护靠它让路。
+  final RxBool dashboardPasswordChangeRequired = false.obs;
+  DateTime? _passwordPendingSince;
+
+  /// 首次改密码的窗口期。
+  ///
+  /// 用户这时正在 WebUI 里操作，面板也可能短暂不可用，自愈重启会
+  /// 把他打断，所以先让路；超过 [firstRunPasswordGrace] 之后恢复
+  /// 正常自愈，免得用户一直不改密码导致守护永久失效。
+  static const Duration firstRunPasswordGrace = Duration(minutes: 60);
+
+  bool get firstRunPasswordPending {
+    if (!dashboardPasswordChangeRequired.value) {
+      _passwordPendingSince = null;
+      return false;
+    }
+    final since = _passwordPendingSince ??= DateTime.now();
+    return DateTime.now().difference(since) < firstRunPasswordGrace;
+  }
   final RxString homeBackgroundPath = ''.obs;
   final RxDouble cardGlassOpacity = 0.62.obs;
   final RxDouble glassBlurAmount = 0.45.obs;
@@ -207,6 +231,7 @@ class HomeController extends GetxController {
     if (!isAstrBotInstalled) {
       _currentAstrBotJwtSecret = null;
       initialPasswordAssistanceCompleted.value = false;
+      dashboardPasswordChangeRequired.value = false;
       _clearInitialCredentials();
       return;
     }
@@ -215,12 +240,15 @@ class HomeController extends GetxController {
     if (dashboard == null) {
       _currentAstrBotJwtSecret = null;
       initialPasswordAssistanceCompleted.value = false;
+      dashboardPasswordChangeRequired.value = false;
       return;
     }
 
     final jwtSecret = dashboard['jwt_secret']?.toString() ?? '';
     _currentAstrBotJwtSecret = jwtSecret.isEmpty ? null : jwtSecret;
     final passwordChangeRequired = dashboard['password_change_required'];
+    // AstrBot 自己还没改掉初始密码：守护据此让路
+    dashboardPasswordChangeRequired.value = passwordChangeRequired == true;
     final username = dashboard['username']?.toString() ?? '';
     final legacyPasswordHash =
         dashboard['password']?.toString().toLowerCase() ?? '';
@@ -429,6 +457,9 @@ class HomeController extends GetxController {
       'AstrBot 已就绪，面板端口 ${_runningAstrBotDashboardPort ?? ServicePorts.dashboardPort}',
       level: TimelineLevel.success,
     ));
+    // AstrBot 启动时才会写出 password_change_required 这类状态，
+    // 这里重新读一次，守护才知道现在能不能自愈
+    unawaited(refreshInitialPasswordAssistanceState());
     _checkAndNavigateToWebview();
   }
 

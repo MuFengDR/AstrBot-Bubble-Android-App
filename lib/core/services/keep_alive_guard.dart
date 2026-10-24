@@ -120,6 +120,12 @@ class KeepAliveGuard {
   /// 是否值得自愈：AstrBot 还没安装时没必要反复重启进程和重建环境
   bool Function()? canHeal;
 
+  /// 跳过自愈时写给时间线的说明，由主 isolate 按具体情况提供
+  String Function()? healBlockReason;
+
+  /// 是否值得探活：没装 AstrBot、用户手动停掉时，探了也没意义
+  bool Function()? canProbe;
+
   GuardConfig _config;
 
   /// 由主 isolate 注入的具体动作，后台 isolate 里为空
@@ -229,6 +235,18 @@ class KeepAliveGuard {
       return;
     }
     _probeDisabledLogged = false;
+
+    // 没装 AstrBot 或用户手动停止时别探：否则会写出一串「判定掉线」，
+    // 看着像掉线，其实是本来就空的
+    final probeGate = canProbe;
+    if (probeGate != null && !probeGate()) {
+      _wasDown = false;
+      _failures = 0;
+      _level = 0;
+      _confirmedDown = false;
+      return;
+    }
+
     final now = DateTime.now();
     final interval = Duration(seconds: config.probeIntervalSeconds);
     final last = _lastProbeAt;
@@ -389,7 +407,7 @@ class KeepAliveGuard {
         await StatusTimeline.instance.record(
           'guard',
           'heal_skipped_install',
-          '当前不满足自愈条件（未安装 / 已手动停止 / 首次配置中），已跳过',
+          healBlockReason?.call() ?? '当前不满足自愈条件（未安装 / 已手动停止），已跳过',
           level: TimelineLevel.info,
         );
       }
