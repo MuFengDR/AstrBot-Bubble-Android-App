@@ -171,6 +171,16 @@ class KeepAliveGuard {
   /// 探活失败不代表真掉线，别急着动手。
   static const Duration startupGrace = Duration(seconds: 120);
 
+  /// 环境刚装好、AstrBot 第一次启动时的宽限。
+  ///
+  /// 这时候进程已经在跑，但装依赖、建库都要时间，端口开得晚。
+  /// 按应用进程算的两分钟不够用，单独给一个更长的窗口。
+  static const Duration setupGrace = Duration(minutes: 5);
+
+  /// 第一次观察到「进程在、端口没开」的时刻
+  DateTime? _setupWaitStart;
+  bool _setupWaitLogged = false;
+
   DateTime _createdAt = DateTime.now();
 
   /// 本次会话里是否成功就绪过。
@@ -282,6 +292,8 @@ class KeepAliveGuard {
         _confirmedDown = false;
         _installSkipLogged = false;
         _everReady = true;
+        _setupWaitStart = null;
+        _setupWaitLogged = false;
         _lastSuccessAt = DateTime.now();
         return;
       }
@@ -399,6 +411,29 @@ class KeepAliveGuard {
       return;
     }
 
+    // 环境刚装好、AstrBot 正在第一次启动：进程在跑但端口还没开。
+    // 这时候重启只会把安装后的初始化打断，等它 up 到 setupGrace 再说。
+    if (!_everReady) {
+      if (await HealthProbe.astrBotProcessRunning()) {
+        _setupWaitStart ??= now;
+        if (now.difference(_setupWaitStart!) < setupGrace) {
+          if (!_setupWaitLogged) {
+            _setupWaitLogged = true;
+            await StatusTimeline.instance.record(
+              'guard',
+              'heal_wait_setup',
+              'AstrBot 正在初始化（进程已在，端口未开），'
+                  '${setupGrace.inMinutes} 分钟内不重启',
+              level: TimelineLevel.info,
+            );
+          }
+          return;
+        }
+      } else {
+        _setupWaitStart = null;
+      }
+    }
+
     // AstrBot 还没安装时自愈无从下手：反复重启进程、重建环境只是白耗电
     final gate = canHeal;
     if (gate != null && !gate()) {
@@ -438,7 +473,8 @@ class KeepAliveGuard {
       await StatusTimeline.instance.record(
         'guard',
         'heal_level1',
-        '探活无响应（连续 $_failures 次），复核后仍未恢复，正在重启 AstrBot 进程',
+        '探活无响应（已连续失败 $_failures 次），'
+            '${reconfirmDelay.inSeconds} 秒复核仍未恢复，正在重启 AstrBot 进程',
         level: TimelineLevel.warning,
         dedupe: false,
       );

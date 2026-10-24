@@ -154,4 +154,31 @@ class HealthProbe {
   /// 端口占用检测（启动前使用）
   /// Whether the port is already taken
   static Future<bool> isPortInUse(int port) => isPortOpen(port);
+
+  /// AstrBot 主进程是否在跑
+  /// Whether the AstrBot python process exists
+  ///
+  /// 端口还没起来的时候也能判断它是不是正在初始化：装完环境第一次启动要
+  /// 装依赖、建库，这段时间进程在、端口不开，不能当成掉线去重启。
+  static Future<bool> astrBotProcessRunning() async {
+    try {
+      final proc = Directory('/proc');
+      if (!await proc.exists()) return false;
+      await for (final entity in proc.list(followLinks: false)) {
+        final name = entity.path.split('/').last;
+        if (int.tryParse(name) == null) continue;
+        try {
+          final cmdline = await File('${entity.path}/cmdline').readAsString();
+          if (cmdline.contains('AstrBot') && cmdline.contains('main.py')) {
+            return true;
+          }
+        } catch (_) {
+          // 别的 uid 的进程、刚退出的进程读不到，跳过
+        }
+      }
+    } catch (_) {
+      // /proc 不可读时按「没在跑」处理，交给端口判断
+    }
+    return false;
+  }
 }
