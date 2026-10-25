@@ -18,6 +18,7 @@ import '../../../core/services/password_manager.dart';
 import '../../../core/config/app_config.dart';
 import '../../../core/config/environment_config.dart';
 import '../../widgets/diagnostic_dialog.dart';
+import '../backup/backup_page.dart';
 
 class SettingsPage extends StatefulWidget {
   final WebViewController astrBotController;
@@ -1606,6 +1607,16 @@ class _SettingsPageState extends State<SettingsPage> {
                 );
               }
             }
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.swap_horiz),
+          title: const Text('备份与迁移（完整）'),
+          subtitle: const Text('含 NapCat 配置与应用设置，可导出与恢复，恢复前自动备份'),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const BackupPage()),
+            );
           },
         ),
         const Padding(
