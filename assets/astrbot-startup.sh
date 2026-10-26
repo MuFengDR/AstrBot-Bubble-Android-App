@@ -81,7 +81,7 @@ bump_progress(){
 
 install_sudo_curl_git(){
   missing=()
-  for cmd in sudo git curl; do
+  for cmd in sudo git curl ffmpeg; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
       missing+=("$cmd")
     fi
@@ -101,12 +101,12 @@ install_sudo_curl_git(){
     echo "apt-get update 失败，继续尝试安装..."
   fi
 
-  if ! apt-get $apt_opts install -y sudo git curl; then
+  if ! apt-get $apt_opts install -y sudo git curl ffmpeg; then
     echo "基础命令安装失败"
     return 1
   fi
 
-  for cmd in sudo git curl; do
+  for cmd in sudo git curl ffmpeg; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
       echo "基础命令安装后仍缺少: $cmd"
       return 1
