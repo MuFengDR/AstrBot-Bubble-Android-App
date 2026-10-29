@@ -14,10 +14,16 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:file_picker/file_picker.dart';
 import '../../controllers/terminal_controller.dart';
 import '../../../core/constants/scripts.dart' as scripts;
+import '../../../core/services/foreground_service.dart';
+import '../../../core/services/message_bridge.dart';
 import '../../../core/services/password_manager.dart';
+import '../../../core/services/power_policy.dart';
+import '../../../core/services/status_timeline.dart';
 import '../../../core/config/app_config.dart';
 import '../../../core/config/environment_config.dart';
 import '../../widgets/diagnostic_dialog.dart';
+import '../backup/backup_page.dart';
+import '../timeline/status_timeline_page.dart';
 
 class SettingsPage extends StatefulWidget {
   final WebViewController astrBotController;
@@ -42,6 +48,10 @@ class _SettingsPageState extends State<SettingsPage> {
   String _appVersion = '';
   bool _isBatteryOptimizationIgnored = false;
 
+  /// 探活间隔输入框的控制器常驻，避免对话框退场动画未结束就被释放
+  final TextEditingController _probeIntervalController =
+      TextEditingController();
+
   // 存储从GitHub API获取的原始下载URL
   String? _originalDownloadUrl;
 
@@ -50,6 +60,12 @@ class _SettingsPageState extends State<SettingsPage> {
     super.initState();
     _loadAppVersion();
     _checkBatteryOptimizationStatus();
+  }
+
+  @override
+  void dispose() {
+    _probeIntervalController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadAppVersion() async {
@@ -1032,6 +1048,84 @@ class _SettingsPageState extends State<SettingsPage> {
     _disposeTextControllersSafely([commandController]);
   }
 
+  // 自定义探活间隔：0 表示关闭探活
+  // Custom probe interval in minutes; 0 turns probing off
+  Future<void> _showProbeIntervalDialog() async {
+    _probeIntervalController.text =
+        PowerPolicy.probeIntervalMinutes.toString();
+    final result = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('探活间隔'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: _probeIntervalController,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: const InputDecoration(
+                labelText: '分钟',
+                hintText: '60',
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              '填 0 - 1440 的整数分钟；填 0 表示关闭探活，同时不再自动检测掉线与恢复。',
+              style: Theme.of(dialogContext).textTheme.bodySmall,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final value = int.tryParse(_probeIntervalController.text.trim());
+              Navigator.of(dialogContext).pop(value);
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (result == null) return;
+    if (result < 0 || result > PowerPolicy.maxProbeIntervalMinutes) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '请填 0 - ${PowerPolicy.maxProbeIntervalMinutes} 之间的整数',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+    await PowerPolicy.setProbeIntervalMinutes(result);
+    await ForegroundServiceManager.applyPowerPolicy();
+    if (!mounted) return;
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('探活间隔已设为 ${PowerPolicy.probeIntervalLabel}')),
+    );
+  }
+
+  // 开关消息通知桥
+  Future<void> _toggleNotifyBridge(bool value) async {
+    await PowerPolicy.setNotifyBridgeEnabled(value);
+    if (value) {
+      await MessageBridge.instance.start();
+    } else {
+      MessageBridge.instance.stop();
+    }
+    if (mounted) setState(() {});
+  }
+
   // 打开文件管理器并导航到 AstrBot Ubuntu 文件系统位置
   Future<void> _openFileManager() async {
     try {
@@ -1607,6 +1701,67 @@ class _SettingsPageState extends State<SettingsPage> {
               }
             }
           },
+        ),
+        ListTile(
+          leading: const Icon(Icons.swap_horiz),
+          title: const Text('备份与迁移（完整）'),
+          subtitle: const Text('含 NapCat 配置与应用设置，可导出与恢复，恢复前自动备份'),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const BackupPage()),
+            );
+          },
+        ),
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+          child: Text(
+            '运行守护',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: Colors.grey,
+            ),
+          ),
+        ),
+        ListTile(
+          leading: const Icon(Icons.timeline),
+          title: const Text('状态时间线'),
+          subtitle: const Text('探活、自愈、备份和通知的完整记录'),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const StatusTimelinePage(),
+              ),
+            );
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.timer_outlined),
+          title: const Text('探活间隔'),
+          subtitle: Text(PowerPolicy.probeIntervalLabel),
+          onTap: _showProbeIntervalDialog,
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.auto_fix_high),
+          title: const Text('断线自动恢复'),
+          subtitle: const Text('AstrBot 无响应时按级别重启进程、环境或服务'),
+          value: PowerPolicy.autoHealEnabled,
+          onChanged: (value) async {
+            await PowerPolicy.setAutoHealEnabled(value);
+            await StatusTimeline.instance.record(
+              'settings',
+              'auto_heal_changed',
+              value ? '已开启断线自动恢复' : '已关闭断线自动恢复',
+            );
+            if (mounted) setState(() {});
+          },
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.notifications_active_outlined),
+          title: const Text('消息通知桥'),
+          subtitle: const Text('把 AstrBot 的新消息和报错转成系统通知'),
+          value: PowerPolicy.notifyBridgeEnabled,
+          onChanged: _toggleNotifyBridge,
         ),
         const Padding(
           padding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
