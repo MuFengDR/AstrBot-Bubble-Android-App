@@ -33,22 +33,22 @@ export PROOT_LOADER=${RuntimeEnvir.binPath}/loader
 export LD_LIBRARY_PATH=${RuntimeEnvir.binPath}
 export PROOT_TMP_DIR=${RuntimeEnvir.tmpPath}
 clear_lines(){
-  printf "\\033[1A" # Move cursor up one line
-  printf "\\033[K"  # Clear the line
-  printf "\\033[1A" # Move cursor up one line
-  printf "\\033[K"  # Clear the line
+  printf "\\\\033[1A" # Move cursor up one line
+  printf "\\\\033[K"  # Clear the line
+  printf "\\\\033[1A" # Move cursor up one line
+  printf "\\\\033[K"  # Clear the line
 }
 progress_echo(){
-  echo -e "\\033[31m- \$@\\033[0m"
-  echo "\$@" > "\$TMPDIR/progress_des"
+  echo -e "\\\\033[31m- \\\$@\\\\033[0m"
+  echo "\\\$@" > "\\\$TMPDIR/progress_des"
 }
 bump_progress(){
   current=0
-  if [ -f "\$TMPDIR/progress" ]; then
-    current=\$(cat "\$TMPDIR/progress" 2>/dev/null || echo 0)
+  if [ -f "\\\$TMPDIR/progress" ]; then
+    current=\\\$(cat "\\\$TMPDIR/progress" 2>/dev/null || echo 0)
   fi
-  next=\$((current + 1))
-  printf "\$next" > "\$TMPDIR/progress"
+  next=\\\$((current + 1))
+  printf "\\\$next" > "\\\$TMPDIR/progress"
 }
 ''';
 
@@ -129,7 +129,7 @@ install_ubuntu(){
     echo "[cmd] busybox tar $TAR_ARGS $UBUNTU_ARCHIVE -C $UBUNTU_PATH/"
     if busybox tar $TAR_ARGS "$UBUNTU_ARCHIVE" -C "$UBUNTU_PATH/" > "$EXTRACT_LOG" 2>&1; then
       while read line; do
-        echo -ne "\033[2K\r$line"
+        echo -ne "\\033[2K\\r$line"
       done < "$EXTRACT_LOG"
       echo
       echo "[result] tar success, moving $UBUNTU_NAME contents"
@@ -160,7 +160,7 @@ install_ubuntu(){
     fi
   else
     VERSION=`cat $UBUNTU_PATH/etc/issue.net 2>/dev/null`
-    # VERSION=`cat $UBUNTU_PATH/etc/issue 2>/dev/null | sed 's/\\n//g' | sed 's/\\l//g'`
+    # VERSION=`cat $UBUNTU_PATH/etc/issue 2>/dev/null | sed 's/\\\\n//g' | sed 's/\\\\l//g'`
     progress_echo "Ubuntu $L_INSTALLED -> $VERSION"
 
   fi
@@ -203,7 +203,7 @@ setup_fake_sysdata() {
 		cpu5 270 0 251 11833 15 3 1 10 0 0
 		cpu6 430 0 520 11386 30 8 1 12 0 0
 		cpu7 30 0 172 12108 50 8 1 13 0 0
-		intr 127541 38 290 0 0 0 0 4 0 1 0 0 25329 258 0 5777 277 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+		intr 127541 38 290 0 0 0 0 4 0 1 0 0 25329 258 0 5777 277 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
 		ctxt 140223
 		btime 1680020856
 		processes 772
@@ -520,7 +520,7 @@ login_ubuntu(){
       TZ="$ANDROID_TZ" \
       PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
       COMMAND_TO_EXEC="$COMMAND_TO_EXEC" \
-      /bin/bash -lc "eval \"\$COMMAND_TO_EXEC\""
+      /bin/bash -lc "eval \"\\\$COMMAND_TO_EXEC\""
 }
 ''';
 
@@ -529,10 +529,10 @@ login_ubuntu(){
 String getInstallerCopyFilesScript() {
   return '''
 copy_files(){
-  mkdir -p "\$UBUNTU_PATH/root"
-  cp ~/astrbot-installer-bootstrap.sh "\$UBUNTU_PATH/root/astrbot-installer-bootstrap.sh"
-  chmod 700 "\$UBUNTU_PATH/root/astrbot-installer-bootstrap.sh"
-  cp ~/cmd_config.json "\$UBUNTU_PATH/root/cmd_config.json"
+  mkdir -p "\\\$UBUNTU_PATH/root"
+  cp ~/astrbot-installer-bootstrap.sh "\\\$UBUNTU_PATH/root/astrbot-installer-bootstrap.sh"
+  chmod 700 "\\\$UBUNTU_PATH/root/astrbot-installer-bootstrap.sh"
+  cp ~/cmd_config.json "\\\$UBUNTU_PATH/root/cmd_config.json"
   echo "installer bootstrap refreshed"
 }
 ''';
@@ -548,7 +548,7 @@ $loginUbuntu
 ${getInstallerCopyFilesScript()}
 clear_lines
 start_astrbot(){
-  login_ubuntu "export TMPDIR='${RuntimeEnvir.tmpPath}'; export ASTRBOT_DASHBOARD_PORT='${ServicePorts.dashboardPort}'; if [ ! -x /root/.local/bin/uv ] || [ ! -d /root/AstrBot ] || [ ! -f /root/AstrBot/pyproject.toml ] || [ ! -f /root/AstrBot/main.py ] || [ ! -d /root/AstrBot/.venv ]; then echo __ASTRBOT_MANUAL_ENV_REQUIRED__; echo 'AstrBot 环境未安装完整，请到主页环境管理安装。'; exit 1; fi; cd /root/AstrBot; echo 'AstrBot 启动中'; /root/.local/bin/uv run --no-sync main.py"
+  login_ubuntu "export TMPDIR='${RuntimeEnvir.tmpPath}'; export ASTRBOT_DASHBOARD_PORT='${ServicePorts.dashboardPort}'; if [ ! -d /root/AstrBot ] || [ ! -f /root/AstrBot/pyproject.toml ] || [ ! -f /root/AstrBot/main.py ] || [ ! -f /root/AstrBot/.venv/bin/python ]; then echo __ASTRBOT_MANUAL_ENV_REQUIRED__; echo 'AstrBot 环境未安装完整，请到主页环境管理安装。'; exit 1; fi; cd /root/AstrBot; echo 'AstrBot 启动中'; /root/AstrBot/.venv/bin/python main.py"
 }
 ''';
 }
