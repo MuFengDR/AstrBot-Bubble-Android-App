@@ -709,9 +709,9 @@ class _LauncherPageState extends State<LauncherPage>
       final installerState = await _readInstallerScriptState();
       final scriptReady = installerState.state == _InstallerScriptState.valid;
       final baseCommandReady = scriptReady && await _hasBaseCommands();
-      final uvReady = scriptReady && baseCommandReady && await _hasUv();
+      // 【修改点：移除了 uv 的状态检查】
       final napCatReady = scriptReady && baseCommandReady && await _hasNapCat();
-      final astrBotReady = scriptReady && uvReady && await _hasAstrBot();
+      final astrBotReady = scriptReady && baseCommandReady && await _hasAstrBot();
       final openCodeReady = scriptReady && baseCommandReady && await _hasOpenCode();
 
       if (!mounted) return;
@@ -723,17 +723,15 @@ class _LauncherPageState extends State<LauncherPage>
           installed: baseCommandReady,
           enabled: scriptReady,
         );
-        _environmentStates['uv'] = _EnvStepState(
-          installed: uvReady,
-          enabled: scriptReady && baseCommandReady,
-        );
+        // 【修改点：移除了 uv 的状态写入】
         _environmentStates['napcat'] = _EnvStepState(
           installed: napCatReady,
           enabled: scriptReady && baseCommandReady,
         );
         _environmentStates['astrbot'] = _EnvStepState(
           installed: astrBotReady,
-          enabled: scriptReady && uvReady,
+          // 【修改点：astrbot 的 enabled 依赖改为基础命令，不再依赖 uv】
+          enabled: scriptReady && baseCommandReady,
         );
         _environmentStates['opencode'] = _EnvStepState(
           installed: openCodeReady,
@@ -803,10 +801,7 @@ class _LauncherPageState extends State<LauncherPage>
     );
   }
 
-  Future<bool> _hasUv() async {
-    return await File('${scripts.ubuntuPath}/root/.local/bin/uv').exists() &&
-        await File('${scripts.ubuntuPath}/root/.local/bin/uvx').exists();
-  }
+  // 【修改点：删除了 _hasUv 方法】
 
   Future<bool> _hasNapCat() async {
     final qqCandidates = [
@@ -2450,6 +2445,7 @@ class _LauncherPageState extends State<LauncherPage>
   }
 
   Widget _buildEnvironmentCard(BuildContext context) {
+    // 【修改点：移除了 uv 的 _EnvStep 定义】
     final steps = [
       _EnvStep(
         'base',
@@ -2457,13 +2453,6 @@ class _LauncherPageState extends State<LauncherPage>
         'sudo / git / curl',
         const Icon(Icons.extension),
         reinstallDescription: '将重新检查并补装 sudo / git / curl，不会主动删除系统包。是否继续？',
-      ),
-      _EnvStep(
-        'uv',
-        'uv',
-        'Python 依赖管理工具',
-        const Icon(Icons.construction),
-        reinstallDescription: '将删除现有 uv/uvx 后重新下载。是否继续？',
       ),
       _EnvStep(
         'napcat',
@@ -2551,14 +2540,16 @@ class _LauncherPageState extends State<LauncherPage>
             ),
           ),
           const SizedBox(height: 8),
-          ...steps.take(4).map(_buildEnvironmentStepTile),
+          // 【修改点：因为少了一个 uv，前3个变成了基础、Napcat、Astrbot】
+          ...steps.take(3).map(_buildEnvironmentStepTile),
           const Divider(height: 24),
           Align(
             alignment: Alignment.centerLeft,
             child: Text('扩展应用', style: Theme.of(context).textTheme.labelLarge),
           ),
           const SizedBox(height: 4),
-          ...steps.skip(4).map(_buildEnvironmentStepTile),
+          // 【修改点：剩下的1个是 OpenCode】
+          ...steps.skip(3).map(_buildEnvironmentStepTile),
         ],
       ),
     );

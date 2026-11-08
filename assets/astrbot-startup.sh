@@ -13,9 +13,7 @@ REINSTALL_PLUGINS_FLAG=0
 ASTRBOT_GITHUB_PROXY="${ASTRBOT_GITHUB_PROXY:-auto}"
 ASTRBOT_FORCE_REINSTALL_STEP="${ASTRBOT_FORCE_REINSTALL_STEP:-}"
 
-export UV_LINK_MODE=copy
-export UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
-export UV_PYTHON_INSTALL_MIRROR="https://ghfast.top/https://github.com/astral-sh/python-build-standalone/releases/download"
+# 【修改点1】移除了所有的 UV_* 环境变量
 
 if [ -z "$TMPDIR" ]; then
   echo "错误：未检测到 TMPDIR，请在挂载共享目录时传入 TMPDIR"
@@ -35,10 +33,7 @@ progress_echo(){
 
 prepare_reinstall_step(){
   case "$1" in
-    uv)
-      progress_echo "uv 重装准备中"
-      rm -f "$HOME/.local/bin/uv" "$HOME/.local/bin/uvx"
-      ;;
+    # 【修改点2】移除了 uv 的清理分支
     napcat)
       progress_echo "NapCat 重装准备中"
       if [ -d "$HOME/napcat/config" ]; then
@@ -54,7 +49,6 @@ prepare_reinstall_step(){
       ;;
     astrbot)
       progress_echo "AstrBot 重装准备中"
-      killall uv 2>/dev/null || true
       rm -rf "$HOME/AstrBot_data_reinstall_backup"
       if [ -d "$HOME/AstrBot/data" ]; then
         cp -r "$HOME/AstrBot/data" "$HOME/AstrBot_data_reinstall_backup"
@@ -101,7 +95,7 @@ install_sudo_curl_git(){
     echo "apt-get update 失败，继续尝试安装..."
   fi
 
-  if ! apt-get $apt_opts install -y sudo git curl; then
+  if ! apt-get $apt_opts install -y sudo git curl python3 python3-venv python3-pip; then
     echo "基础命令安装失败"
     return 1
   fi
@@ -166,65 +160,7 @@ network_test() {
     fi
 }
 
-install_uv(){
-  INSTALL_DIR="$HOME/.local/bin"
-  if [ ! -x "$INSTALL_DIR/uv" ]; then
-    progress_echo "uv $L_NOT_INSTALLED，$L_INSTALLING..."
-    network_test
-    APP_NAME="uv"
-    APP_VERSION="0.9.9"
-    ARCHIVE_FILE="uv-aarch64-unknown-linux-gnu.tar.gz"
-    DOWNLOAD_URL="${target_proxy:+${target_proxy}/}https://github.com/astral-sh/uv/releases/download/${APP_VERSION}/${ARCHIVE_FILE}"
-
-    # 检查必要命令
-    for cmd in tar mkdir cp chmod mktemp rm curl; do
-      if ! command -v $cmd >/dev/null 2>&1; then
-        echo "错误：缺少必要命令 $cmd，无法安装 $APP_NAME"
-        exit 1
-      fi
-    done
-
-    # 创建安装目录和临时目录
-    mkdir -p $INSTALL_DIR
-    TMP_DIR=$(mktemp -d 2>/dev/null || mktemp -t 'uvtmp.XXXXXX')
-    if [ -z "$TMP_DIR" ]; then
-      echo "创建临时目录失败"
-      exit 1
-    fi
-    mkdir -p "$TMP_DIR"
-    TMP_ARCHIVE="$TMP_DIR/$ARCHIVE_FILE"
-
-    # 下载并解压（失败直接退出，不使用return）
-    echo "正在下载 $APP_NAME $APP_VERSION..."
-    if ! curl -fL $DOWNLOAD_URL -o $TMP_ARCHIVE; then
-      echo "下载失败"
-      rm -rf $TMP_DIR
-      exit 1
-    fi
-    echo "正在解压 $APP_NAME..."
-    if ! tar -C "$TMP_DIR" -xf "$TMP_ARCHIVE" --strip-components 1; then
-      echo "解压失败"
-      rm -rf $TMP_DIR
-      exit 1
-    fi
-
-    # 安装并授权
-    cp $TMP_DIR/uv $TMP_DIR/uvx $INSTALL_DIR/
-    chmod +x $INSTALL_DIR/uv $INSTALL_DIR/uvx
-
-    # 自动配置 PATH（写入 Ubuntu root 的 bashrc）
-    if ! grep -q "$INSTALL_DIR" $HOME/.bashrc; then
-      echo "export PATH=$INSTALL_DIR:\$PATH" >> $HOME/.bashrc
-      source $HOME/.bashrc
-      echo "已自动配置 $APP_NAME 路径到环境变量"
-    fi
-
-    # 清理临时文件
-    rm -rf $TMP_DIR
-  else
-    progress_echo "uv $L_INSTALLED"
-  fi
-}
+# 【修改点3】完全删除了 install_uv 函数
 
 linuxqq_ready(){
   command -v qq >/dev/null 2>&1 &&
@@ -420,13 +356,10 @@ fi
 
 patch_napcat_installer(){
   local installer="$1"
-  # 上游历史脚本会让 curl 在 HTTP 404 时继续，并固定使用 Ubuntu 24.04 已淘汰的 libasound2。
   sed -i -E 's/curl[[:space:]]+-k[[:space:]]+-L/curl -fL/g; s/curl[[:space:]]+-kL/curl -fL/g' "$installer"
   if apt-cache show libasound2t64 >/dev/null 2>&1; then
     sed -i -E 's/(^|[^[:alnum:]_])libasound2([^[:alnum:]_]|$)/\1libasound2t64\2/g' "$installer"
   fi
-  # 本脚本已用官网签名地址安装并验收 LinuxQQ；上游主流程仍会无条件调用旧版 install_linuxqq。
-  # 只替换主流程中的独立调用行，保留函数定义，避免再次下载已失效的固定版本。
   sed -i -E 's/^[[:space:]]*install_linuxqq[[:space:]]*$/log "LinuxQQ 已由 AstrBot Android 安装，跳过上游重复安装"/' "$installer"
   if grep -qE '^[[:space:]]*install_linuxqq[[:space:]]*$' "$installer"; then
     echo "修补 NapCat 上游 LinuxQQ 重复安装步骤失败"
@@ -435,7 +368,6 @@ patch_napcat_installer(){
 }
 
 install_napcat(){
-  # 检查是否完整安装。旧版本可能留下 launcher.sh，但 LinuxQQ 或依赖包安装失败。
   if ! check_napcat_ready >/dev/null 2>&1; then
     progress_echo "Napcat $L_NOT_INSTALLED，$L_INSTALLING..."
 
@@ -448,13 +380,11 @@ install_napcat(){
       echo "apt 修复依赖失败，继续执行安装并在结束时做完整校验"
     fi
 
-    # 先修复最容易失效的 LinuxQQ 下载。失败时保留现有 NapCat 文件与配置，便于直接重试。
     if ! install_linuxqq; then
       echo "LinuxQQ 安装失败，NapCat 安装已中止"
       exit 1
     fi
 
-    # 备份配置目录（如果存在）
     if [ -d "$HOME/napcat/config" ]; then
       echo "备份 NapCat 配置目录..."
       cp -r "$HOME/napcat/config" "$HOME/napcat_config_backup"
@@ -477,16 +407,12 @@ install_napcat(){
       exit 1
     fi
 
-    # 环境管理的 NapCat 步骤只做安装，不做登录启动。
-    # 有些上游安装脚本会在安装结束后顺手启动 QQ/NapCat，这里统一收掉，
-    # 后续从主页账号卡片手动启动。
     pkill -f 'qq --no-sandbox' 2>/dev/null || true
     pkill -f 'NapCat' 2>/dev/null || true
     pkill -f '/root/launcher_.*\.sh' 2>/dev/null || true
     pkill -f '/root/launcher\.sh' 2>/dev/null || true
     pkill -f 'napcat_instances/.*/launcher' 2>/dev/null || true
     
-    # 恢复配置目录
     if [ -d "$HOME/napcat_config_backup" ]; then
       echo "恢复 NapCat 配置目录..."
       mkdir -p "$HOME/napcat/config"
@@ -494,7 +420,6 @@ install_napcat(){
       rm -rf "$HOME/napcat_config_backup"
     fi
     
-  # 只在配置文件不存在时写入默认配置
   if [ ! -f "$HOME/napcat/config/onebot11.json" ]; then
     echo "写入 onebot11.json 默认配置文件"
     cat > "$HOME/napcat/config/onebot11.json" <<EOF
@@ -541,56 +466,46 @@ configure_napcat_token_ttl(){
 
 check_napcat_ready(){
   local missing=0
-
+  # (NapCat相关的检查保持不变)
   if ! command -v qq >/dev/null 2>&1; then
     echo "[AstrBot Android] missing NapCat dependency: qq"
     missing=1
   fi
-
   if ! command -v Xvfb >/dev/null 2>&1; then
     echo "[AstrBot Android] missing NapCat dependency: Xvfb"
     missing=1
   fi
-
   if ! dpkg -s linuxqq 2>/dev/null | grep -q "Status: install ok installed"; then
     echo "[AstrBot Android] missing or broken NapCat dependency: linuxqq"
     missing=1
   fi
-
   if ! dpkg -s libnss3 2>/dev/null | grep -q "Status: install ok installed"; then
     echo "[AstrBot Android] missing or broken NapCat dependency: libnss3"
     missing=1
   fi
-
   if ! dpkg -s libnspr4 2>/dev/null | grep -q "Status: install ok installed"; then
     echo "[AstrBot Android] missing or broken NapCat dependency: libnspr4"
     missing=1
   fi
-
   if ! { dpkg -s libasound2t64 2>/dev/null || dpkg -s libasound2 2>/dev/null; } | grep -q "Status: install ok installed"; then
     echo "[AstrBot Android] missing or broken NapCat dependency: libasound2/libasound2t64"
     missing=1
   fi
-
   if [ ! -f "$HOME/launcher.sh" ]; then
     echo "[AstrBot Android] missing NapCat launcher: $HOME/launcher.sh"
     missing=1
   fi
-
   if [ ! -f "$HOME/libnapcat_launcher.so" ]; then
     echo "[AstrBot Android] missing NapCat launcher library: $HOME/libnapcat_launcher.so"
     missing=1
   fi
-
   if [ ! -d "$HOME/napcat" ]; then
     echo "[AstrBot Android] missing NapCat directory: $HOME/napcat"
     missing=1
   fi
-
   if [ "$missing" -ne 0 ]; then
     return 1
   fi
-
   return 0
 }
 
@@ -607,20 +522,16 @@ check_astrbot_ready(){
     missing=1
   fi
 
-  if [ ! -x "$HOME/.local/bin/uv" ]; then
-    echo "[AstrBot Android] missing dependency: uv"
-    missing=1
-  fi
-
   if [ ! -d "$HOME/AstrBot" ]; then
     echo "[AstrBot Android] missing runtime: AstrBot"
     missing=1
   fi
 
+  # 【修改点4】检查 .venv 是否存在，并检查 python 是否可用
   if [ ! -d "$HOME/AstrBot/.venv" ]; then
     echo "[AstrBot Android] missing runtime: AstrBot .venv"
     missing=1
-  elif ! cd "$HOME/AstrBot" || ! "$HOME/.local/bin/uv" run --no-sync python -c "import aiohttp" >/dev/null 2>&1; then
+  elif ! cd "$HOME/AstrBot" || ! "$HOME/AstrBot/.venv/bin/python" -c "import aiohttp" >/dev/null 2>&1; then
     echo "[AstrBot Android] missing dependency: aiohttp"
     missing=1
   fi
@@ -641,8 +552,6 @@ install_astrbot(){
 
   rm -rf "$CLONE_TEMP_DIR"
 
-  killall uv 2>/dev/null
-
   if [ -d "$INSTALL_DIR" ] && { [ ! -f "$INSTALL_DIR/pyproject.toml" ] || [ ! -f "$INSTALL_DIR/main.py" ]; }; then
     echo "AstrBot 安装目录不完整，准备重新安装..."
     rm -rf "$HOME/AstrBot_data_reinstall_backup"
@@ -652,24 +561,19 @@ install_astrbot(){
     rm -rf "$INSTALL_DIR"
   fi
 
-  # 检查是否已安装
   if [ ! -d "$INSTALL_DIR" ]; then
     cd $HOME
     progress_echo "AstrBot $L_NOT_INSTALLED，$L_INSTALLING..."
 
-    # 克隆仓库（失败直接退出）
     echo "正在获取 AstrBot 最新版本..."
 
-    # 判断是否使用自定义 git clone 命令
     if [ -n "$CUSTOM_GIT_CLONE" ]; then
       echo "使用自定义 Git Clone 命令..."
       echo "执行: $CUSTOM_GIT_CLONE"
-      # 执行自定义命令，假设克隆到当前目录，然后重命名为临时目录
       if ! eval "$CUSTOM_GIT_CLONE"; then
         echo "自定义 Git Clone 命令执行失败"
         exit 1
       fi
-      # 查找克隆后的目录（通常是 AstrBot）
       if [ -d "AstrBot" ]; then
         mv "AstrBot" "$CLONE_TEMP_DIR"
       else
@@ -679,7 +583,6 @@ install_astrbot(){
     else
       network_test
       
-      # 使用默认逻辑：获取最新的正式版 tag，跳过 beta/alpha/rc/dev/pre 等预发布版本
       LATEST_TAG=$(git ls-remote --tags --sort='-v:refname' ${target_proxy:+${target_proxy}/}https://github.com/AstrBotDevs/AstrBot.git | awk -F'/' '{print $3}' | sed 's/\^{}//g' | grep -E '^v?[0-9]+(\.[0-9]+){1,2}$' | head -n 1)
 
       if [ -z "$LATEST_TAG" ]; then
@@ -690,16 +593,14 @@ install_astrbot(){
         CLONE_BRANCH="$LATEST_TAG"
       fi
 
-      # 克隆到临时目录
       echo "正在克隆 AstrBot 仓库，分支/标签: $CLONE_BRANCH..."
       if ! git clone --depth=1 --branch "$CLONE_BRANCH" ${target_proxy:+${target_proxy}/}https://github.com/AstrBotDevs/AstrBot.git "$CLONE_TEMP_DIR"; then
         echo "克隆 AstrBot 仓库失败"
-        rm -rf "$CLONE_TEMP_DIR"  # 清理失败的临时目录
+        rm -rf "$CLONE_TEMP_DIR"
         exit 1
       fi
     fi
 
-    # 原子性重命名
     mv "$CLONE_TEMP_DIR" "$INSTALL_DIR"
 
   else
@@ -710,7 +611,6 @@ install_astrbot(){
   cd "$INSTALL_DIR"
 
   if [ ! -d "$INSTALL_DIR/data" ]; then
-
     echo "检测到 data 目录不存在，初始化数据目录..."
     mkdir "$INSTALL_DIR/data"
 
@@ -720,8 +620,6 @@ install_astrbot(){
       mv "$HOME/AstrBot_data_reinstall_backup" "$INSTALL_DIR/data"
       REINSTALL_PLUGINS_FLAG=1
     else
-    
-    # 检查并恢复最新备份
     if [ -d "$BACKUP_DIR" ]; then
       echo "扫描备份目录: $BACKUP_DIR"
       LATEST_BACKUP=$(ls -t "$BACKUP_DIR"/AstrBotBubble-backup-*.tar.gz 2>/dev/null | head -n 1)
@@ -729,13 +627,10 @@ install_astrbot(){
       if [ -n "$LATEST_BACKUP" ]; then
         echo "找到备份文件: $LATEST_BACKUP"
         echo "恢复 AstrBot 数据备份..."
-        
-        # 解压备份到 data 目录
         if tar -xzf "$LATEST_BACKUP" -C "$INSTALL_DIR"; then
           echo "备份恢复成功"
           echo "AstrBot 数据已从备份恢复"
-          REINSTALL_PLUGINS_FLAG=1  # 备份恢复成功，需要重装插件依赖
-
+          REINSTALL_PLUGINS_FLAG=1
         else
           echo "备份恢复失败，使用默认配置"
           cp "$HOME/cmd_config.json" "$INSTALL_DIR/data"
@@ -754,40 +649,41 @@ install_astrbot(){
       echo "拷贝 cmd_config.json 默认配置文件"
     fi
     fi
-    
     rm -rf "$INSTALL_DIR/.venv"
-
   fi
 
-  if [ ! -d "$INSTALL_DIR/.venv" ] || ! $HOME/.local/bin/uv run --no-sync python -c "import aiohttp" >/dev/null 2>&1; then
-
-    # 使用 uv sync 同步依赖
-    echo "同步 AstrBot 依赖..."
-    if ! $HOME/.local/bin/uv sync; then
+  # 【修改点5】使用 venv 替换 uv sync
+  if [ ! -d "$INSTALL_DIR/.venv" ] || ! "$INSTALL_DIR/.venv/bin/python" -c "import aiohttp" >/dev/null 2>&1; then
+    echo "创建 Python 虚拟环境并同步 AstrBot 依赖..."
+    
+    # 创建虚拟环境
+    if ! python3 -m venv "$INSTALL_DIR/.venv"; then
+      echo "创建虚拟环境失败，请确保 python3-venv 已安装"
+      exit 1
+    fi
+    
+    # 使用清华源安装依赖
+    if ! "$INSTALL_DIR/.venv/bin/pip" install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple; then
       echo "依赖同步失败"
       exit 1
     fi
-
-    REINSTALL_PLUGINS_FLAG=1  # .venv 不存在，需要重装插件依赖
+    REINSTALL_PLUGINS_FLAG=1
   fi
 
-  # 检查是否需要重装插件依赖（根据标记）
   if [ "$REINSTALL_PLUGINS_FLAG" -eq 1 ]; then
-
     echo "检测到重装插件依赖标记，开始重装..."
-    # 清除标记（将脚本中的标记重置为0）
     sed -i 's/^REINSTALL_PLUGINS_FLAG=1$/REINSTALL_PLUGINS_FLAG=0/' /root/astrbot-startup.sh
 
-    # 扫描所有插件的 requirements.txt 并安装到 venv
     echo "扫描插件依赖..."
     if [ -d "$INSTALL_DIR/data/plugins" ]; then
       for plugin_dir in "$INSTALL_DIR/data/plugins"/*; do
         if [ -d "$plugin_dir" ] && [ -f "$plugin_dir/requirements.txt" ]; then
           echo "发现插件依赖: $plugin_dir/requirements.txt"
-          if [ -f "$HOME/.local/bin/uv" ]; then
+          # 【修改点6】使用 venv 中的 pip 替换 uv pip
+          if [ -f "$INSTALL_DIR/.venv/bin/pip" ]; then
             cd "$INSTALL_DIR"
             echo "安装插件依赖: $(basename "$plugin_dir")..."
-            $HOME/.local/bin/uv pip install -r "$plugin_dir/requirements.txt" 2>/dev/null || echo "警告: 插件依赖安装失败，将在启动时重试"
+            "$INSTALL_DIR/.venv/bin/pip" install -r "$plugin_dir/requirements.txt" -i https://pypi.tuna.tsinghua.edu.cn/simple 2>/dev/null || echo "警告: 插件依赖安装失败，将在启动时重试"
           fi
         fi
       done
@@ -805,19 +701,14 @@ launch_astrbot(){
   fi
 
   cd "$INSTALL_DIR"
-  if [ ! -f "$HOME/.local/bin/uv" ]; then
-    echo "uv 未找到"
-    exit 1
-  fi
 
-  # 使用 uv run --no-sync main.py 启动（跳过依赖同步）
+  # 【修改点7】使用 .venv 启动替换 uv run
   progress_echo "AstrBot 启动中"
 
-  if ! $HOME/.local/bin/uv run --no-sync main.py; then
+  if ! "$INSTALL_DIR/.venv/bin/python" main.py; then
     echo "AstrBot 启动失败"
     exit 1
   fi
-
 }
 
 run_step(){
@@ -829,11 +720,7 @@ run_step(){
       maybe_prepare_reinstall base
       install_sudo_curl_git
       ;;
-    uv)
-      maybe_prepare_reinstall uv
-      install_sudo_curl_git
-      install_uv
-      ;;
+    # 【修改点8】移除了 uv 的分支
     napcat)
       maybe_prepare_reinstall napcat
       install_sudo_curl_git
@@ -842,14 +729,11 @@ run_step(){
     astrbot)
       maybe_prepare_reinstall astrbot
       install_sudo_curl_git
-      install_uv
       install_astrbot
       ;;
     all|"")
       install_sudo_curl_git
       bump_progress
-      bump_progress
-      install_uv
       bump_progress
       install_napcat
       bump_progress
@@ -859,7 +743,7 @@ run_step(){
       ;;
     *)
       echo "未知步骤: $1"
-      echo "可用步骤: base uv napcat astrbot ports all"
+      echo "可用步骤: base napcat astrbot ports all"
       exit 1
       ;;
   esac
